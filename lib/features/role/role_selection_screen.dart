@@ -29,7 +29,7 @@ class RoleSelectionScreen extends StatelessWidget {
                   ),
                   const SizedBox(height: 22),
 
-                  // ✅ نفس شكل الأزرار: مستطيل بزوايا دائرية وحد رفيع
+                  // ✅ زر الطالب: ينقل لواجهة الطالب
                   _RoleButton(
                     icon: Icons.school_outlined,
                     label: 'Student',
@@ -37,27 +37,24 @@ class RoleSelectionScreen extends StatelessWidget {
                         Navigator.pushNamed(context, AppRoutes.studentHome),
                   ),
                   const SizedBox(height: 14),
+
+                  // ✅ زر السايق: ينقل لواجهة تسجيل دخول السايق
                   _RoleButton(
                     icon: Icons.badge_outlined,
                     label: 'Driver',
-                    onTap: () {
-                      // 🟡 لاحقاً تربطينها بصفحة تسجيل دخول السائق
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Driver screen later')),
-                      );
-                    },
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.driverLogin),
                   ),
                   const SizedBox(height: 14),
+
+                  // ✅ زر الأدمن: ينقل لواجهة تسجيل دخول الأدمن
                   _RoleButton(
                     icon: Icons.admin_panel_settings_outlined,
                     label: 'Admin',
-                    onTap: () {
-                      // 🟡 لاحقاً تربطينها بصفحة تسجيل دخول الأدمن
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(content: Text('Admin screen later')),
-                      );
-                    },
+                    onTap: () =>
+                        Navigator.pushNamed(context, AppRoutes.adminLogin),
                   ),
+
                   const SizedBox(height: 8),
                 ],
               ),
