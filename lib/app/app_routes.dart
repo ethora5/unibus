@@ -24,6 +24,7 @@ class AppRoutes {
   static const String studentHome = '/student-home';
   static const String studentNotifications = '/student-notifications';
   static const String studentFeedback = '/student-feedback';
+  static const String studentMap = '/student-map';
 
   // Driver
   static const String driverLogin = '/driver-login';

@@ -1,10 +1,15 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_map/flutter_map.dart';
+import 'package:latlong2/latlong.dart';
 
 import '../../app/app_routes.dart';
 import '../../app/app_theme.dart';
 
 class StudentHomeScreen extends StatelessWidget {
   const StudentHomeScreen({super.key});
+
+  // ✅ UNITEN Putrajaya (قريب جدًا)
+  static final LatLng unitenCenter = LatLng(2.9766, 101.7331);
 
   @override
   Widget build(BuildContext context) {
@@ -19,18 +24,30 @@ class StudentHomeScreen extends StatelessWidget {
       ),
       body: Stack(
         children: [
-          // ✅ مكان الخريطة (Placeholder)
+          // ✅ الخريطة بدل الـ Placeholder
           Positioned.fill(
-            child: Container(
-              color: const Color(0xFFEFF3FA),
-              child: const Center(
-                // 🔵 لاحقاً نستبدله بـ GoogleMap widget
-                child: Icon(
-                  Icons.map_outlined,
-                  size: 80,
-                  color: Colors.black26,
+            child: FlutterMap(
+              options: MapOptions(initialCenter: unitenCenter, initialZoom: 16),
+              children: [
+                TileLayer(
+                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                  userAgentPackageName: 'com.example.unibus',
                 ),
-              ),
+                MarkerLayer(
+                  markers: [
+                    Marker(
+                      point: unitenCenter,
+                      width: 46,
+                      height: 46,
+                      child: const Icon(
+                        Icons.location_on,
+                        size: 46,
+                        color: Colors.red,
+                      ),
+                    ),
+                  ],
+                ),
+              ],
             ),
           ),
 

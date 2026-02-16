@@ -78,7 +78,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             const SizedBox(height: 12),
             const Center(
               child: Text(
-                'Welcome, Driver',
+                'Welcome',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
               ),
             ),
