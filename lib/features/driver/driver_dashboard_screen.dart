@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
+
 import '../../../app/app_routes.dart';
 import '../../../app/app_theme.dart';
+import 'driver_schedule_screen.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
   const DriverDashboardScreen({super.key});
@@ -13,7 +15,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   final TextEditingController nameController = TextEditingController();
 
   String? selectedBus;
-  String? selectedRoute;
+
+  // ✅ Route واحد ثابت (بدون Special Semester)
+  static const String routeName = 'UNITEN Internal Shuttle Bus';
 
   final List<_BusItem> buses = const [
     _BusItem(id: 'Bus A', status: 'Available'),
@@ -23,11 +27,14 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     _BusItem(id: 'Bus E', status: 'Maintenance'),
   ];
 
-  final List<String> routes = const [
-    'Main Campus Loop',
-    'Hostel Loop',
-    'Admin Block Route',
-  ];
+  @override
+  void initState() {
+    super.initState();
+    // تحديث الزر لما يتغير النص
+    nameController.addListener(() {
+      if (mounted) setState(() {});
+    });
+  }
 
   @override
   void dispose() {
@@ -36,9 +43,14 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   }
 
   bool get canStart =>
-      nameController.text.trim().isNotEmpty &&
-      selectedBus != null &&
-      selectedRoute != null;
+      nameController.text.trim().isNotEmpty && selectedBus != null;
+
+  void _openScheduleImage() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(builder: (_) => const DriverScheduleScreen()),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,8 +71,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
           children: [
             const SizedBox(height: 8),
-
-            // ✅ أيقونة و welcome مثل الصورة
             Center(
               child: Container(
                 height: 56,
@@ -85,14 +95,14 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             const SizedBox(height: 6),
             const Center(
               child: Text(
-                'Select your bus and route to start\ntracking',
+                'Select your bus to start tracking',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: Colors.black54, fontSize: 12),
               ),
             ),
             const SizedBox(height: 18),
 
-            // ✅ Driver Name
+            // Driver Name
             const Text(
               'Driver Name',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
@@ -100,7 +110,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
             const SizedBox(height: 8),
             TextField(
               controller: nameController,
-              onChanged: (_) => setState(() {}),
               decoration: InputDecoration(
                 hintText: 'Enter driver name',
                 filled: true,
@@ -122,9 +131,50 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 ),
               ),
             ),
+
             const SizedBox(height: 16),
 
-            // ✅ Select Bus
+            // Route ثابت + View Schedule يفتح الصورة داخل التطبيق
+            const Text(
+              'Route',
+              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: AppTheme.cardBorder),
+              ),
+              child: Row(
+                children: [
+                  const Icon(
+                    Icons.alt_route,
+                    color: AppTheme.primaryBlue,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      routeName,
+                      style: const TextStyle(
+                        fontWeight: FontWeight.w700,
+                        fontSize: 13,
+                      ),
+                    ),
+                  ),
+                  TextButton(
+                    onPressed: _openScheduleImage,
+                    child: const Text('View Schedule'),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 16),
+
+            // Select Bus
             const Text(
               'Select Bus',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
@@ -143,37 +193,9 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
               );
             }),
 
-            const SizedBox(height: 8),
-
-            // ✅ Select Route dropdown
-            const Text(
-              'Select Route',
-              style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
-            ),
-            const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.cardBorder),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: selectedRoute,
-                  hint: const Text('Select Route...'),
-                  isExpanded: true,
-                  items: routes
-                      .map((r) => DropdownMenuItem(value: r, child: Text(r)))
-                      .toList(),
-                  onChanged: (v) => setState(() => selectedRoute = v),
-                ),
-              ),
-            ),
-
             const SizedBox(height: 18),
 
-            // ✅ Start Tracking button (رمادي لو ناقص شي)
+            // Start Tracking
             SizedBox(
               height: 50,
               child: ElevatedButton.icon(
@@ -182,6 +204,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                         Navigator.pushNamed(
                           context,
                           AppRoutes.driverTrackingActive,
+                          arguments: {
+                            'driverName': nameController.text.trim(),
+                            'busId': selectedBus,
+                            'routeName': routeName,
+                          },
                         );
                       }
                     : null,

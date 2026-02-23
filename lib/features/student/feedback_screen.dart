@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-
+import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../app/app_theme.dart';
 
 class FeedbackScreen extends StatefulWidget {
@@ -12,7 +12,6 @@ class FeedbackScreen extends StatefulWidget {
 class _FeedbackScreenState extends State<FeedbackScreen> {
   final TextEditingController controller = TextEditingController();
 
-  // ✅ قائمة أنواع الشكاوي مثل dropdown بالصورة
   final List<String> complaintTypes = const [
     'Bus Delay',
     'Driver Behavior',
@@ -22,20 +21,117 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
   ];
 
   String? selectedType;
+  bool _isSubmitting = false;
+
+  // ✅ بدل setState لكل حرف
+  final ValueNotifier<int> _charCount = ValueNotifier<int>(0);
+  final ValueNotifier<bool> _canSubmit = ValueNotifier<bool>(false);
+
+  @override
+  void initState() {
+    super.initState();
+    controller.addListener(_recompute);
+    _recompute();
+  }
+
+  void _recompute() {
+    final text = controller.text.trim();
+    _charCount.value = controller.text.length;
+    _canSubmit.value =
+        (selectedType != null) && text.isNotEmpty && !_isSubmitting;
+  }
 
   @override
   void dispose() {
+    controller.removeListener(_recompute);
     controller.dispose();
+    _charCount.dispose();
+    _canSubmit.dispose();
     super.dispose();
   }
 
-  int get charCount => controller.text.length;
+  Future<void> _showMessageDialog({
+    required String title,
+    required String message,
+  }) async {
+    if (!mounted) return;
+
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('OK'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _submitToFirestore() async {
+    if (!_canSubmit.value) return;
+
+    setState(() => _isSubmitting = true);
+    _recompute();
+
+    try {
+      await FirebaseFirestore.instance.collection('feedbacks').add({
+        'type': selectedType,
+        'message': controller.text.trim(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'studentId': 'anonymous',
+        'busSessionId': null,
+        'routeName': null,
+      });
+
+      await _showMessageDialog(title: 'Success', message: 'Sent successfully');
+
+      setState(() => selectedType = null);
+      controller.clear();
+      _recompute();
+    } catch (_) {
+      await _showMessageDialog(
+        title: 'Error',
+        message: 'An error occurred. Please try again.',
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isSubmitting = false);
+        _recompute();
+      }
+    }
+  }
+
+  Future<void> _openTypePicker() async {
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (_) => SafeArea(
+        child: ListView(
+          children: complaintTypes
+              .map(
+                (t) => ListTile(
+                  title: Text(t),
+                  onTap: () => Navigator.pop(context, t),
+                ),
+              )
+              .toList(),
+        ),
+      ),
+    );
+
+    if (selected != null) {
+      setState(() => selectedType = selected);
+      _recompute();
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final bool canSubmit =
-        (selectedType != null) && controller.text.trim().isNotEmpty;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Feedback & Complaints'),
@@ -78,23 +174,32 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
             ),
             const SizedBox(height: 8),
 
-            // ✅ Dropdown بنفس الشكل العام
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: Colors.white,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(color: AppTheme.cardBorder),
-              ),
-              child: DropdownButtonHideUnderline(
-                child: DropdownButton<String>(
-                  value: selectedType,
-                  hint: const Text('Select type...'),
-                  isExpanded: true,
-                  items: complaintTypes
-                      .map((t) => DropdownMenuItem(value: t, child: Text(t)))
-                      .toList(),
-                  onChanged: (v) => setState(() => selectedType = v),
+            InkWell(
+              onTap: _isSubmitting ? null : _openTypePicker,
+              child: Container(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 14,
+                ),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.cardBorder),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        selectedType ?? 'Select type...',
+                        style: TextStyle(
+                          color: selectedType == null
+                              ? Colors.black54
+                              : Colors.black87,
+                        ),
+                      ),
+                    ),
+                    const Icon(Icons.arrow_drop_down),
+                  ],
                 ),
               ),
             ),
@@ -106,7 +211,6 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
             ),
             const SizedBox(height: 8),
 
-            // ✅ Text area مثل الصورة
             Container(
               padding: const EdgeInsets.all(12),
               decoration: BoxDecoration(
@@ -124,46 +228,43 @@ class _FeedbackScreenState extends State<FeedbackScreen> {
                       'Write the details of your complaint\nor feedback here...',
                   counterText: '',
                 ),
-                onChanged: (_) => setState(() {}),
+                // ✅ لا onChanged => setState
               ),
             ),
 
             const SizedBox(height: 6),
             Align(
               alignment: Alignment.centerLeft,
-              child: Text(
-                '$charCount/500 characters',
-                style: const TextStyle(color: Colors.black45, fontSize: 11),
+              child: ValueListenableBuilder<int>(
+                valueListenable: _charCount,
+                builder: (_, count, __) => Text(
+                  '$count/500 characters',
+                  style: const TextStyle(color: Colors.black45, fontSize: 11),
+                ),
               ),
             ),
+
             const SizedBox(height: 14),
 
-            // ✅ زر Submit رمادي إذا ما في بيانات (مثل الصورة تقريباً)
             SizedBox(
               height: 48,
-              child: ElevatedButton.icon(
-                onPressed: canSubmit
-                    ? () {
-                        // ✅ حالياً رسالة نجاح (لاحقاً تربطينه بفايرستور)
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(content: Text('Submitted')),
-                        );
-                        setState(() {
-                          selectedType = null;
-                          controller.clear();
-                        });
-                      }
-                    : null,
-                icon: const Icon(Icons.send_outlined, size: 18),
-                label: const Text('Submit'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.primaryBlue,
-                  foregroundColor: Colors.white,
-                  disabledBackgroundColor: const Color(0xFFE3E7EF),
-                  disabledForegroundColor: Colors.black38,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+              child: ValueListenableBuilder<bool>(
+                valueListenable: _canSubmit,
+                builder: (_, canSubmit, __) => ElevatedButton.icon(
+                  onPressed: (canSubmit && !_isSubmitting)
+                      ? _submitToFirestore
+                      : null,
+                  icon: const Icon(Icons.send_outlined, size: 18),
+                  label: Text(_isSubmitting ? 'Sending...' : 'Submit'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppTheme.primaryBlue,
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(0xFFE3E7EF),
+                    disabledForegroundColor: Colors.black38,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                 ),
               ),

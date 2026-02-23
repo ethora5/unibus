@@ -1,72 +1,282 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
 import '../../app/app_routes.dart';
 import '../../app/app_theme.dart';
 
-class StudentHomeScreen extends StatelessWidget {
+// هذي شاشة الطالب الرئيسية
+// فيها خريطة + رسالة إذا ما فيه باص شغال + كارد معلومات تحت
+class StudentHomeScreen extends StatefulWidget {
   const StudentHomeScreen({super.key});
 
-  // ✅ UNITEN Putrajaya (قريب جدًا)
+  @override
+  State<StudentHomeScreen> createState() => _StudentHomeScreenState();
+}
+
+class _StudentHomeScreenState extends State<StudentHomeScreen> {
+  // هذا موقع يونيتن الافتراضي عشان الخريطة تفتح عليه
   static final LatLng unitenCenter = LatLng(2.9766, 101.7331);
+
+  // هذا متغير عشان إذا اليوزر ضغط X على رسالة "مافي باص"
+  // نخلي الرسالة تختفي وما ترجع إلا إذا رجع فتح الصفحة من جديد
+  bool _bannerDismissed = false;
+
+  // هذا ستريم من فايرستور: يجيب لنا أول جلسة فيها status = active
+  // إذا ما فيه ولا جلسة active، يرجع لنا ليست فاضية
+  Stream<QuerySnapshot<Map<String, dynamic>>> _activeSessionStream() {
+    return FirebaseFirestore.instance
+        .collection('drivingSessions')
+        .where('status', isEqualTo: 'active')
+        .limit(1)
+        .snapshots();
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        // ✅ نفس عنوان الصورة
-        title: const Text('Live Bus Tracking'),
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
-        ),
-      ),
-      body: Stack(
-        children: [
-          // ✅ الخريطة بدل الـ Placeholder
-          Positioned.fill(
-            child: FlutterMap(
-              options: MapOptions(initialCenter: unitenCenter, initialZoom: 16),
-              children: [
-                TileLayer(
-                  urlTemplate: 'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                  userAgentPackageName: 'com.example.unibus',
-                ),
-                MarkerLayer(
-                  markers: [
-                    Marker(
-                      point: unitenCenter,
-                      width: 46,
-                      height: 46,
-                      child: const Icon(
-                        Icons.location_on,
-                        size: 46,
-                        color: Colors.red,
-                      ),
+    // هنا نستخدم StreamBuilder عشان نسمع للتغييرات بالفايرستور لايف
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: _activeSessionStream(),
+      builder: (context, snapshot) {
+        // إذا صار خطأ بالقراءة من فايرستور نعرض الخطأ على الشاشة
+        if (snapshot.hasError) {
+          return Scaffold(
+            appBar: AppBar(
+              title: const Text('Live Bus Tracking'),
+              leading: IconButton(
+                icon: const Icon(Icons.arrow_back),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ),
+            body: Center(
+              child: Text(
+                'في مشكلة بالاتصال: ${snapshot.error}',
+                textAlign: TextAlign.center,
+              ),
+            ),
+          );
+        }
+
+        // هذا يعني الداتا للحين قاعده تتحمل من فايرستور
+        final bool loading =
+            snapshot.connectionState == ConnectionState.waiting;
+
+        // هنا نحدد هل فيه جلسة active ولا لا
+        // لازم snapshot.hasData أول، وبعدها نشوف docs فاضية ولا لا
+        final bool hasActiveSession =
+            snapshot.hasData && snapshot.data!.docs.isNotEmpty;
+
+        // إذا فيه session فعّال نحفظ الداتا هنا
+        Map<String, dynamic>? sessionData;
+        if (hasActiveSession) {
+          sessionData = snapshot.data!.docs.first.data();
+        }
+
+        // نجهز موقع الباص إذا كان موجود بالفايرستور (lastLocation)
+        LatLng? busPosition;
+        if (sessionData != null) {
+          // lastLocation لازم يكون GeoPoint داخل فايرستور
+          final GeoPoint? gp = sessionData['lastLocation'] as GeoPoint?;
+          if (gp != null) {
+            busPosition = LatLng(gp.latitude, gp.longitude);
+          }
+        }
+
+        // هذي القيم الافتراضية اللي تطلع إذا ما فيه باص شغال
+        // يعني الكارد تحت يطلع بس بياناته تكون __
+        String busName = '__';
+        String routeName = '__';
+        String currentStop = '__';
+        String nextStop = '__';
+        String etaText = '__';
+        String distanceText = '__';
+
+        // إذا فيه sessionData (يعني فيه باص شغال) نعبي القيم من الداتابيس
+        if (sessionData != null) {
+          final String? bn = sessionData['busName'] as String?;
+          final String? rn = sessionData['routeName'] as String?;
+          final String? cs = sessionData['currentStopName'] as String?;
+          final String? ns = sessionData['nextStopName'] as String?;
+
+          // نتأكد إن النص مو فاضي قبل نحطه
+          if (bn != null && bn.trim().isNotEmpty) busName = bn.trim();
+          if (rn != null && rn.trim().isNotEmpty) routeName = rn.trim();
+          if (cs != null && cs.trim().isNotEmpty) currentStop = cs.trim();
+          if (ns != null && ns.trim().isNotEmpty) nextStop = ns.trim();
+
+          // etaMinutes ممكن يكون int أو num
+          final dynamic etaRaw = sessionData['etaMinutes'];
+          if (etaRaw is int) {
+            etaText = '$etaRaw mins';
+          } else if (etaRaw is num) {
+            etaText = '${etaRaw.toInt()} mins';
+          }
+
+          // distanceKm لازم يكون رقم
+          final dynamic distRaw = sessionData['distanceKm'];
+          if (distRaw is num) {
+            distanceText = '${distRaw.toStringAsFixed(1)} km';
+          }
+        }
+
+        // واجهة الشاشة
+        return Scaffold(
+          appBar: AppBar(
+            title: const Text('Live Bus Tracking'),
+            leading: IconButton(
+              icon: const Icon(Icons.arrow_back),
+              onPressed: () => Navigator.pop(context),
+            ),
+          ),
+          body: Stack(
+            children: [
+              // الخريطة تاخذ كل الشاشة
+              Positioned.fill(
+                child: FlutterMap(
+                  options: MapOptions(
+                    initialCenter: unitenCenter,
+                    initialZoom: 16,
+                  ),
+                  children: [
+                    // هذا مصدر الخريطة من OpenStreetMap
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.unibus',
+                    ),
+
+                    // هذا يحط ماركر للباص بس إذا فيه باص شغال وعندنا موقع
+                    MarkerLayer(
+                      markers: [
+                        if (hasActiveSession && busPosition != null)
+                          Marker(
+                            point: busPosition,
+                            width: 46,
+                            height: 46,
+                            child: const Icon(
+                              Icons.location_on,
+                              size: 46,
+                              color: Colors.red,
+                            ),
+                          ),
+                      ],
                     ),
                   ],
                 ),
-              ],
-            ),
-          ),
+              ),
 
-          // ✅ البطاقة البيضاء اللي تحت فوق الخريطة
-          Align(
-            alignment: Alignment.bottomCenter,
-            child: SafeArea(
-              top: false,
-              child: Padding(
-                padding: const EdgeInsets.all(14),
-                child: _BottomInfoCard(
-                  onNotificationsTap: () => Navigator.pushNamed(
-                    context,
-                    AppRoutes.studentNotifications,
+              // إذا الداتابيس للحين تتحمل نطلع رسالة صغيرة فوق
+              if (loading)
+                Positioned(
+                  left: 14,
+                  right: 14,
+                  top: 14,
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: AppTheme.cardBorder),
+                    ),
+                    child: const Text(
+                      'Loading database...',
+                      textAlign: TextAlign.center,
+                      style: TextStyle(fontWeight: FontWeight.w600),
+                    ),
                   ),
-                  onFeedbackTap: () =>
-                      Navigator.pushNamed(context, AppRoutes.studentFeedback),
+                ),
+
+              // إذا ما فيه باص شغال، نطلع رسالة "No active buses right now"
+              // وتظل لين اليوزر يضغط X
+              if (!hasActiveSession && !_bannerDismissed && !loading)
+                Positioned(
+                  left: 14,
+                  right: 14,
+                  top: 14,
+                  child: _NoBusBanner(
+                    onClose: () {
+                      setState(() {
+                        _bannerDismissed = true;
+                      });
+                    },
+                  ),
+                ),
+
+              // هذا الكارد تحت يطلع دايم حتى لو ما فيه باص
+              // إذا ما فيه باص بيكون كله __
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: SafeArea(
+                  top: false,
+                  child: _BottomInfoCard(
+                    busName: busName,
+                    routeName: routeName,
+                    currentLocation: currentStop,
+                    nextStop: nextStop,
+                    etaText: etaText,
+                    distanceText: distanceText,
+                    // هذي الأزرار لازم تكون شغالة دايم حسب طلبك
+                    onNotificationsTap: () {
+                      Navigator.pushNamed(
+                        context,
+                        AppRoutes.studentNotifications,
+                      );
+                    },
+                    onFeedbackTap: () {
+                      Navigator.pushNamed(context, AppRoutes.studentFeedback);
+                    },
+                  ),
                 ),
               ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+// هذا بانر فوق يقول ما فيه باصات شغالة
+class _NoBusBanner extends StatelessWidget {
+  final VoidCallback onClose;
+
+  const _NoBusBanner({required this.onClose});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: AppTheme.cardBorder),
+        boxShadow: const [
+          BoxShadow(
+            blurRadius: 14,
+            offset: Offset(0, 6),
+            color: Color(0x14000000),
+          ),
+        ],
+      ),
+      child: Row(
+        children: [
+          const Expanded(
+            child: Text(
+              'No active buses right now',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: Colors.black87,
+              ),
+            ),
+          ),
+          InkWell(
+            onTap: onClose,
+            borderRadius: BorderRadius.circular(8),
+            child: const Padding(
+              padding: EdgeInsets.all(6),
+              child: Icon(Icons.close, size: 18, color: Colors.black54),
             ),
           ),
         ],
@@ -75,22 +285,38 @@ class StudentHomeScreen extends StatelessWidget {
   }
 }
 
+// هذا الكارد الأبيض تحت اللي فيه معلومات الباص + أزرار
 class _BottomInfoCard extends StatelessWidget {
   final VoidCallback onNotificationsTap;
   final VoidCallback onFeedbackTap;
 
+  final String busName;
+  final String routeName;
+  final String currentLocation;
+  final String nextStop;
+  final String etaText;
+  final String distanceText;
+
   const _BottomInfoCard({
     required this.onNotificationsTap,
     required this.onFeedbackTap,
+    required this.busName,
+    required this.routeName,
+    required this.currentLocation,
+    required this.nextStop,
+    required this.etaText,
+    required this.distanceText,
   });
 
   @override
   Widget build(BuildContext context) {
     return Container(
+      // نخليه ياخذ عرض الشاشة كله بدون مسافات
+      width: double.infinity,
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
         color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(16)),
         border: Border.all(color: AppTheme.cardBorder),
         boxShadow: const [
           BoxShadow(
@@ -102,9 +328,10 @@ class _BottomInfoCard extends StatelessWidget {
         ],
       ),
       child: Column(
+        // نخلي الكارد ياخذ قد اللي يحتاجه بس
         mainAxisSize: MainAxisSize.min,
         children: [
-          // ✅ Bus title + route
+          // هذا الجزء العلوي فيه اسم الباص والروت
           Row(
             children: [
               Container(
@@ -120,21 +347,24 @@ class _BottomInfoCard extends StatelessWidget {
                 ),
               ),
               const SizedBox(width: 10),
-              const Expanded(
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'Bus A',
-                      style: TextStyle(
+                      busName,
+                      style: const TextStyle(
                         fontWeight: FontWeight.w700,
                         fontSize: 14,
                       ),
                     ),
-                    SizedBox(height: 2),
+                    const SizedBox(height: 2),
                     Text(
-                      'Route: Main Campus Loop',
-                      style: TextStyle(color: Colors.black54, fontSize: 12),
+                      'Route: $routeName',
+                      style: const TextStyle(
+                        color: Colors.black54,
+                        fontSize: 12,
+                      ),
                     ),
                   ],
                 ),
@@ -143,7 +373,7 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // ✅ صف معلومات: Current / Next stop
+          // هذا الجزء فيه Current Location و Next Stop
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -151,34 +381,38 @@ class _BottomInfoCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
               border: Border.all(color: AppTheme.cardBorder),
             ),
-            child: const Column(
+            child: Row(
               children: [
-                _InfoRow(
-                  leftLabel: 'Current Location',
-                  leftValue: 'Library Stop',
-                  rightLabel: 'Next Stop',
-                  rightValue: 'Science Building',
+                Expanded(
+                  child: _LabelValue(
+                    label: 'Current Location',
+                    value: currentLocation,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: _LabelValue(label: 'Next Stop', value: nextStop),
                 ),
               ],
             ),
           ),
           const SizedBox(height: 10),
 
-          // ✅ بطاقتين صغيرات: ETA + Distance
-          const Row(
+          // هذا الجزء فيه ETA والمسافة
+          Row(
             children: [
               Expanded(
                 child: _MiniStatCard(
                   title: 'ETA to Next\nStop',
-                  value: '3 mins',
+                  value: etaText,
                   isGreen: true,
                 ),
               ),
-              SizedBox(width: 10),
+              const SizedBox(width: 10),
               Expanded(
                 child: _MiniStatCard(
                   title: 'Distance',
-                  value: '0.8 km',
+                  value: distanceText,
                   isGreen: false,
                 ),
               ),
@@ -186,7 +420,7 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // ✅ أزرار تحت: Notifications + Feedback
+          // هذا صف الأزرار، ولازم يكون شغال دايم حسب طلبك
           Row(
             children: [
               Expanded(
@@ -229,35 +463,7 @@ class _BottomInfoCard extends StatelessWidget {
   }
 }
 
-class _InfoRow extends StatelessWidget {
-  final String leftLabel;
-  final String leftValue;
-  final String rightLabel;
-  final String rightValue;
-
-  const _InfoRow({
-    required this.leftLabel,
-    required this.leftValue,
-    required this.rightLabel,
-    required this.rightValue,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Expanded(
-          child: _LabelValue(label: leftLabel, value: leftValue),
-        ),
-        const SizedBox(width: 10),
-        Expanded(
-          child: _LabelValue(label: rightLabel, value: rightValue),
-        ),
-      ],
-    );
-  }
-}
-
+// هذا ويدجت صغير يعرض عنوان وقيمته تحت بعض
 class _LabelValue extends StatelessWidget {
   final String label;
   final String value;
@@ -287,6 +493,7 @@ class _LabelValue extends StatelessWidget {
   }
 }
 
+// هذا كارد صغير للـ ETA والمسافة
 class _MiniStatCard extends StatelessWidget {
   final String title;
   final String value;
