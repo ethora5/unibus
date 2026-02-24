@@ -2,32 +2,38 @@ import 'package:flutter/material.dart';
 import '../../app/app_routes.dart';
 import '../../app/app_theme.dart';
 
-// هذي صفحة اختيار الرول
-// المستخدم يختار هل هو طالب او سايق او ادمن
+// هذه الصفحة مسؤولة عن اختيار نوع المستخدم قبل الدخول للتطبيق.
+// المستخدم يحدد هل هو طالب أو سائق أو أدمن.
+// بناءً على الاختيار يتم نقله إلى الصفحة المناسبة.
 class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // هذا الهيكل الاساسي للصفحة
+    // الهيكل الأساسي للصفحة.
+    // يوفر لنا الخلفية العامة وتنظيم المحتوى.
     return Scaffold(
-      // هذا يمنع المحتوى يدخل تحت شريط الحالة
+      // يمنع العناصر من الدخول تحت شريط الحالة أو الجزء العلوي للشاشة.
       body: SafeArea(
+        // يجعل جميع محتويات الصفحة في المنتصف أفقيًا.
         child: Center(
-          // هذا يحدد اقصى عرض للصفحة عشان الشكل يطلع مرتب بالشاشات الكبيرة
+          // يحدد أقصى عرض للواجهة حتى لا تتمدد العناصر في الشاشات الكبيرة.
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
+
+            // يضيف مسافة داخلية من اليمين واليسار لتحسين الشكل.
             child: Padding(
-              // مسافة من اليمين واليسار
               padding: const EdgeInsets.symmetric(horizontal: 24),
+
+              // يستخدم لترتيب العناصر فوق بعضها بشكل عمودي.
               child: Column(
-                // يخلي العناصر بالنص عمودي
+                // يجعل العناصر في منتصف الشاشة عموديًا.
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // مسافة فوق
+                  // مسافة بسيطة في الأعلى لتحسين التوازن البصري.
                   const SizedBox(height: 12),
 
-                  // عنوان الصفحة
+                  // عنوان الصفحة الذي يوضح للمستخدم ما المطلوب منه.
                   const Text(
                     'Select Your Role',
                     style: TextStyle(
@@ -37,37 +43,44 @@ class RoleSelectionScreen extends StatelessWidget {
                     ),
                   ),
 
-                  // مسافة بين العنوان والازرار
+                  // مسافة بين العنوان والأزرار.
                   const SizedBox(height: 22),
 
-                  // زر الطالب يوديه لواجهة الطالب
+                  // زر الطالب.
+                  // عند الضغط يتم الانتقال إلى الصفحة الرئيسية الخاصة بالطالب.
                   _RoleButton(
                     label: 'Student',
                     onTap: () {
+                      // تنفيذ عملية الانتقال باستخدام اسم المسار المحدد مسبقًا.
                       Navigator.pushNamed(context, AppRoutes.studentHome);
                     },
                   ),
 
                   const SizedBox(height: 14),
 
-                  // زر السايق يوديه لتسجيل دخول السايق
+                  // زر السائق.
+                  // ينقل المستخدم إلى صفحة تسجيل دخول السائق.
                   _RoleButton(
                     label: 'Driver',
                     onTap: () {
+                      // الانتقال إلى صفحة تسجيل دخول السائق.
                       Navigator.pushNamed(context, AppRoutes.driverLogin);
                     },
                   ),
 
                   const SizedBox(height: 14),
 
-                  // زر الادمن يوديه لتسجيل دخول الادمن
+                  // زر الأدمن.
+                  // ينقل المستخدم إلى صفحة تسجيل دخول الأدمن.
                   _RoleButton(
                     label: 'Admin',
                     onTap: () {
+                      // الانتقال إلى صفحة تسجيل دخول الأدمن.
                       Navigator.pushNamed(context, AppRoutes.adminLogin);
                     },
                   ),
 
+                  // مسافة سفلية خفيفة لتحسين توزيع العناصر.
                   const SizedBox(height: 8),
                 ],
               ),
@@ -79,39 +92,48 @@ class RoleSelectionScreen extends StatelessWidget {
   }
 }
 
-// هذا ويدجت زر نستخدمه لكل الرولات
+// هذا عنصر زر مخصص نستخدمه لتجنب تكرار نفس تصميم الزر.
+// يتم تمرير النص والدالة الخاصة بالضغط لكل زر.
 class _RoleButton extends StatelessWidget {
-  // النص اللي يطلع داخل الزر
+  // النص الذي يظهر داخل الزر.
   final String label;
 
-  // الدالة اللي تشتغل اذا ضغطنا الزر
+  // الدالة التي يتم تنفيذها عند الضغط على الزر.
   final VoidCallback onTap;
 
   const _RoleButton({required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
+    // عنصر يعطي تأثير بصري عند الضغط على الزر.
     return InkWell(
-      // يعطي تأثير بسيط لما نضغط
-      borderRadius: BorderRadius.circular(10),
+      // عند الضغط يتم تنفيذ الدالة المرسلة.
       onTap: onTap,
+
+      // يحدد انحناء الحواف لتتطابق مع شكل الزر.
+      borderRadius: BorderRadius.circular(10),
+
+      // يمثل جسم الزر الفعلي.
       child: Container(
-        // ارتفاع ثابت للزر
+        // ارتفاع ثابت للزر.
         height: 52,
 
-        // ياخذ عرض الصفحة كامل
+        // يأخذ عرض المساحة المتاحة بالكامل.
         width: double.infinity,
 
-        // شكل الزر
+        // خصائص تصميم الزر من لون وحدود وانحناء.
         decoration: BoxDecoration(
+          // لون الخلفية أبيض.
           color: Colors.white,
+
+          // انحناء الحواف.
           borderRadius: BorderRadius.circular(10),
 
-          // حدود الزر
+          // رسم حدود للزر باستخدام لون من ملف التصميم العام.
           border: Border.all(color: AppTheme.cardBorder, width: 1.2),
         ),
 
-        // نخلي النص بالنص بالضبط
+        // يوسّط النص داخل الزر.
         child: Center(
           child: Text(
             label,

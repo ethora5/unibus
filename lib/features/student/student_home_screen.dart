@@ -6,8 +6,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../app/app_routes.dart';
 import '../../app/app_theme.dart';
 
-// هذي شاشة الطالب الرئيسية
-// فيها خريطة + رسالة إذا ما فيه باص شغال + كارد معلومات تحت
+// هذه شاشة الطالب الرئيسية
+// تحتوي على:
+// 1) خريطة تعرض موقع الحافلة إن وجدت
+// 2) رسالة أعلى الشاشة إذا لا توجد حافلات نشطة
+// 3) بطاقة معلومات أسفل الشاشة فيها تفاصيل الرحلة وأزرار التنقل
 class StudentHomeScreen extends StatefulWidget {
   const StudentHomeScreen({super.key});
 
@@ -16,15 +19,16 @@ class StudentHomeScreen extends StatefulWidget {
 }
 
 class _StudentHomeScreenState extends State<StudentHomeScreen> {
-  // هذا موقع يونيتن الافتراضي عشان الخريطة تفتح عليه
+  // هذا الموقع الافتراضي لفتح الخريطة على مركز الجامعة
   static final LatLng unitenCenter = LatLng(2.9766, 101.7331);
 
-  // هذا متغير عشان إذا اليوزر ضغط X على رسالة "مافي باص"
-  // نخلي الرسالة تختفي وما ترجع إلا إذا رجع فتح الصفحة من جديد
+  // هذا المتغير يمنع تكرار رسالة "لا توجد حافلات" بعد إغلاقها
+  // يعني إذا المستخدم ضغط إغلاق، تختفي الرسالة ولا ترجع إلا إذا خرج ورجع للصفحة
   bool _bannerDismissed = false;
 
-  // هذا ستريم من فايرستور: يجيب لنا أول جلسة فيها status = active
-  // إذا ما فيه ولا جلسة active، يرجع لنا ليست فاضية
+  // هذا بث مباشر من قاعدة البيانات
+  // يجلب أول جلسة قيادتها حالتها نشطة
+  // إذا لا توجد جلسة نشطة، يرجع قائمة فارغة
   Stream<QuerySnapshot<Map<String, dynamic>>> _activeSessionStream() {
     return FirebaseFirestore.instance
         .collection('drivingSessions')
@@ -35,11 +39,11 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // هنا نستخدم StreamBuilder عشان نسمع للتغييرات بالفايرستور لايف
+    // نستخدم عنصر يبني الواجهة بناءً على التغييرات القادمة من قاعدة البيانات مباشرة
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: _activeSessionStream(),
       builder: (context, snapshot) {
-        // إذا صار خطأ بالقراءة من فايرستور نعرض الخطأ على الشاشة
+        // إذا حصل خطأ أثناء القراءة من قاعدة البيانات نعرض رسالة للمستخدم
         if (snapshot.hasError) {
           return Scaffold(
             appBar: AppBar(
@@ -58,33 +62,33 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
           );
         }
 
-        // هذا يعني الداتا للحين قاعده تتحمل من فايرستور
+        // هذا يعني أن البيانات ما زالت قيد التحميل
         final bool loading =
             snapshot.connectionState == ConnectionState.waiting;
 
-        // هنا نحدد هل فيه جلسة active ولا لا
-        // لازم snapshot.hasData أول، وبعدها نشوف docs فاضية ولا لا
+        // نحدد هل توجد جلسة نشطة أم لا
+        // لازم نتأكد أولًا أن البيانات موجودة ثم نتأكد أن القائمة ليست فارغة
         final bool hasActiveSession =
             snapshot.hasData && snapshot.data!.docs.isNotEmpty;
 
-        // إذا فيه session فعّال نحفظ الداتا هنا
+        // إذا توجد جلسة نشطة نخزن بياناتها هنا
         Map<String, dynamic>? sessionData;
         if (hasActiveSession) {
           sessionData = snapshot.data!.docs.first.data();
         }
 
-        // نجهز موقع الباص إذا كان موجود بالفايرستور (lastLocation)
+        // نحاول استخراج آخر موقع مسجل للحافلة من بيانات الجلسة
+        // يجب أن يكون مخزن في قاعدة البيانات كنقطة جغرافية
         LatLng? busPosition;
         if (sessionData != null) {
-          // lastLocation لازم يكون GeoPoint داخل فايرستور
           final GeoPoint? gp = sessionData['lastLocation'] as GeoPoint?;
           if (gp != null) {
             busPosition = LatLng(gp.latitude, gp.longitude);
           }
         }
 
-        // هذي القيم الافتراضية اللي تطلع إذا ما فيه باص شغال
-        // يعني الكارد تحت يطلع بس بياناته تكون __
+        // قيم افتراضية تظهر في بطاقة المعلومات إذا لا توجد حافلة نشطة
+        // الهدف: البطاقة تبقى ظاهرة دائمًا لكن البيانات تكون فارغة
         String busName = '__';
         String routeName = '__';
         String currentStop = '__';
@@ -92,20 +96,21 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
         String etaText = '__';
         String distanceText = '__';
 
-        // إذا فيه sessionData (يعني فيه باص شغال) نعبي القيم من الداتابيس
+        // إذا توجد بيانات جلسة، نستخرج المعلومات منها لعرضها في البطاقة
         if (sessionData != null) {
           final String? bn = sessionData['busName'] as String?;
           final String? rn = sessionData['routeName'] as String?;
           final String? cs = sessionData['currentStopName'] as String?;
           final String? ns = sessionData['nextStopName'] as String?;
 
-          // نتأكد إن النص مو فاضي قبل نحطه
+          // نتأكد من أن النص ليس فارغًا قبل الاعتماد عليه
           if (bn != null && bn.trim().isNotEmpty) busName = bn.trim();
           if (rn != null && rn.trim().isNotEmpty) routeName = rn.trim();
           if (cs != null && cs.trim().isNotEmpty) currentStop = cs.trim();
           if (ns != null && ns.trim().isNotEmpty) nextStop = ns.trim();
 
-          // etaMinutes ممكن يكون int أو num
+          // زمن الوصول المتوقع قد يكون رقم صحيح أو رقم عشري
+          // نحوله لصيغة مناسبة للعرض
           final dynamic etaRaw = sessionData['etaMinutes'];
           if (etaRaw is int) {
             etaText = '$etaRaw mins';
@@ -113,14 +118,15 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
             etaText = '${etaRaw.toInt()} mins';
           }
 
-          // distanceKm لازم يكون رقم
+          // المسافة يجب أن تكون رقم
+          // نعرضها برقم عشري واحد
           final dynamic distRaw = sessionData['distanceKm'];
           if (distRaw is num) {
             distanceText = '${distRaw.toStringAsFixed(1)} km';
           }
         }
 
-        // واجهة الشاشة
+        // واجهة الصفحة الرئيسية للطالب
         return Scaffold(
           appBar: AppBar(
             title: const Text('Live Bus Tracking'),
@@ -131,7 +137,7 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
           ),
           body: Stack(
             children: [
-              // الخريطة تاخذ كل الشاشة
+              // الخريطة تأخذ الشاشة كلها بالخلفية
               Positioned.fill(
                 child: FlutterMap(
                   options: MapOptions(
@@ -139,14 +145,14 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                     initialZoom: 16,
                   ),
                   children: [
-                    // هذا مصدر الخريطة من OpenStreetMap
+                    // طبقة الخريطة الأساسية من مزود خرائط مفتوح
                     TileLayer(
                       urlTemplate:
                           'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                       userAgentPackageName: 'com.example.unibus',
                     ),
 
-                    // هذا يحط ماركر للباص بس إذا فيه باص شغال وعندنا موقع
+                    // طبقة العلامات: نضيف علامة للحافلة فقط إذا كانت نشطة ولدينا موقع
                     MarkerLayer(
                       markers: [
                         if (hasActiveSession && busPosition != null)
@@ -166,7 +172,7 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                 ),
               ),
 
-              // إذا الداتابيس للحين تتحمل نطلع رسالة صغيرة فوق
+              // إذا كانت البيانات قيد التحميل نظهر شريط بسيط أعلى الشاشة
               if (loading)
                 Positioned(
                   left: 14,
@@ -187,8 +193,8 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   ),
                 ),
 
-              // إذا ما فيه باص شغال، نطلع رسالة "No active buses right now"
-              // وتظل لين اليوزر يضغط X
+              // إذا لا توجد حافلة نشطة ولم يغلق المستخدم الرسالة ولم نكن في التحميل
+              // نظهر رسالة "لا توجد حافلات نشطة"
               if (!hasActiveSession && !_bannerDismissed && !loading)
                 Positioned(
                   left: 14,
@@ -196,6 +202,7 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   top: 14,
                   child: _NoBusBanner(
                     onClose: () {
+                      // عند الإغلاق نخزن أن المستخدم أغلق الرسالة
                       setState(() {
                         _bannerDismissed = true;
                       });
@@ -203,8 +210,8 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   ),
                 ),
 
-              // هذا الكارد تحت يطلع دايم حتى لو ما فيه باص
-              // إذا ما فيه باص بيكون كله __
+              // بطاقة المعلومات السفلية تظهر دائمًا
+              // إذا لا توجد حافلة ستظهر القيم الافتراضية
               Align(
                 alignment: Alignment.bottomCenter,
                 child: SafeArea(
@@ -216,13 +223,16 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                     nextStop: nextStop,
                     etaText: etaText,
                     distanceText: distanceText,
-                    // هذي الأزرار لازم تكون شغالة دايم حسب طلبك
+
+                    // زر الإشعارات يعمل دائمًا وينقل لصفحة إعدادات الإشعارات
                     onNotificationsTap: () {
                       Navigator.pushNamed(
                         context,
                         AppRoutes.studentNotifications,
                       );
                     },
+
+                    // زر الملاحظات يعمل دائمًا وينقل لصفحة الملاحظات
                     onFeedbackTap: () {
                       Navigator.pushNamed(context, AppRoutes.studentFeedback);
                     },
@@ -237,7 +247,8 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
   }
 }
 
-// هذا بانر فوق يقول ما فيه باصات شغالة
+// هذا شريط تنبيه أعلى الشاشة يوضح أنه لا توجد حافلات نشطة
+// يحتوي على زر إغلاق حتى يتمكن المستخدم من إخفائه
 class _NoBusBanner extends StatelessWidget {
   final VoidCallback onClose;
 
@@ -285,7 +296,9 @@ class _NoBusBanner extends StatelessWidget {
   }
 }
 
-// هذا الكارد الأبيض تحت اللي فيه معلومات الباص + أزرار
+// هذه بطاقة المعلومات السفلية
+// تعرض تفاصيل الرحلة الحالية مثل اسم الحافلة والمسار والمحطة الحالية والقادمة
+// وتحتوي على أزرار للانتقال لصفحات أخرى
 class _BottomInfoCard extends StatelessWidget {
   final VoidCallback onNotificationsTap;
   final VoidCallback onFeedbackTap;
@@ -311,7 +324,7 @@ class _BottomInfoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      // نخليه ياخذ عرض الشاشة كله بدون مسافات
+      // تأخذ عرض الشاشة بالكامل
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
@@ -328,10 +341,10 @@ class _BottomInfoCard extends StatelessWidget {
         ],
       ),
       child: Column(
-        // نخلي الكارد ياخذ قد اللي يحتاجه بس
+        // يجعل البطاقة تأخذ حجم المحتوى فقط وليس كامل الشاشة
         mainAxisSize: MainAxisSize.min,
         children: [
-          // هذا الجزء العلوي فيه اسم الباص والروت
+          // الجزء العلوي: أيقونة + اسم الحافلة + اسم المسار
           Row(
             children: [
               Container(
@@ -373,7 +386,7 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // هذا الجزء فيه Current Location و Next Stop
+          // بطاقة صغيرة تعرض الموقع الحالي والمحطة القادمة
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -398,7 +411,7 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
 
-          // هذا الجزء فيه ETA والمسافة
+          // بطاقة زمن الوصول والمسافة
           Row(
             children: [
               Expanded(
@@ -420,7 +433,7 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // هذا صف الأزرار، ولازم يكون شغال دايم حسب طلبك
+          // أزرار التنقل
           Row(
             children: [
               Expanded(
@@ -463,7 +476,7 @@ class _BottomInfoCard extends StatelessWidget {
   }
 }
 
-// هذا ويدجت صغير يعرض عنوان وقيمته تحت بعض
+// عنصر صغير يعرض عنوان وقيمته تحته
 class _LabelValue extends StatelessWidget {
   final String label;
   final String value;
@@ -493,7 +506,7 @@ class _LabelValue extends StatelessWidget {
   }
 }
 
-// هذا كارد صغير للـ ETA والمسافة
+// بطاقة صغيرة لعرض قيمة مختصرة مثل زمن الوصول أو المسافة
 class _MiniStatCard extends StatelessWidget {
   final String title;
   final String value;

@@ -3,6 +3,12 @@ import 'package:flutter/material.dart';
 import '../../../app/app_routes.dart';
 import '../../../app/app_theme.dart';
 
+// هذه شاشة التتبع النشط للسائق
+// الهدف منها:
+// 1) إظهار أن التتبع شغال
+// 2) عرض تفاصيل الجلسة
+// 3) عرض الوقت المنقضي منذ بدء التتبع
+// 4) توفير زر لإيقاف التتبع والانتقال لشاشة إنهاء الجلسة
 class DriverTrackingActiveScreen extends StatefulWidget {
   const DriverTrackingActiveScreen({super.key});
 
@@ -13,13 +19,18 @@ class DriverTrackingActiveScreen extends StatefulWidget {
 
 class _DriverTrackingActiveScreenState
     extends State<DriverTrackingActiveScreen> {
+  // مؤقت يتم تشغيله لتحديث الوقت المنقضي كل ثانية
   late Timer timer;
+
+  // عدّاد الثواني منذ فتح الصفحة (يمثل مدة التتبع بشكل مبسط)
   int seconds = 0;
 
   @override
   void initState() {
     super.initState();
-    // ✅ مؤقت بسيط عشان يطلع elapsed time مثل التقرير
+
+    // تشغيل مؤقت يتكرر كل ثانية
+    // كل ثانية نزيد العداد ونبني الواجهة من جديد لتحديث الوقت المعروض
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
       setState(() => seconds++);
     });
@@ -27,15 +38,27 @@ class _DriverTrackingActiveScreenState
 
   @override
   void dispose() {
+    // إيقاف المؤقت عند الخروج من الصفحة لتجنب استمرار عمله بالخلفية
     timer.cancel();
     super.dispose();
   }
 
+  // تحويل عدد الثواني إلى صيغة وقت جاهزة للعرض
+  // هنا يتم عرضها بصيغة ساعات ثابتة مع دقائق وثواني
   String get elapsed {
+    // حساب الدقائق من إجمالي الثواني
     final int m = seconds ~/ 60;
+
+    // حساب الثواني المتبقية بعد استخراج الدقائق
     final int s = seconds % 60;
+
+    // تنسيق الدقائق ليكون دائماً رقمين
     final String mm = m.toString().padLeft(2, '0');
+
+    // تنسيق الثواني ليكون دائماً رقمين
     final String ss = s.toString().padLeft(2, '0');
+
+    // إرجاع النص النهائي للعرض
     return '00:$mm:$ss';
   }
 
@@ -43,17 +66,23 @@ class _DriverTrackingActiveScreenState
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
+        // عنوان الصفحة
         title: const Text('Tracking Active'),
+
+        // زر رجوع للصفحة السابقة
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
         ),
       ),
+
+      // حماية المحتوى من شريط الحالة
       body: SafeArea(
+        // قائمة قابلة للتمرير لتجنب قص المحتوى في الشاشات الصغيرة
         child: ListView(
           padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
           children: [
-            // ✅ كارد أخضر Tracking Activated
+            // بطاقة خضراء توضح أن التتبع مفعل
             Container(
               padding: const EdgeInsets.all(16),
               decoration: BoxDecoration(
@@ -62,6 +91,7 @@ class _DriverTrackingActiveScreenState
                 border: Border.all(color: const Color(0xFFBFE6C9)),
               ),
               child: Column(
+                // عناصر البطاقة ثابتة ولا تحتاج إعادة بناء منفصلة
                 children: const [
                   Icon(
                     Icons.wifi_tethering,
@@ -82,9 +112,10 @@ class _DriverTrackingActiveScreenState
                 ],
               ),
             ),
+
             const SizedBox(height: 14),
 
-            // ✅ Session Details
+            // بطاقة تفاصيل الجلسة
             _Card(
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
@@ -94,9 +125,13 @@ class _DriverTrackingActiveScreenState
                     style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
                   ),
                   SizedBox(height: 12),
+
+                  // صفوف معلومات ثابتة حالياً (تجريبية)
                   _KeyValueRow(left: 'Driver Name', right: 'Bouq'),
                   _KeyValueRow(left: 'Bus Number', right: 'Bus A'),
                   _KeyValueRow(left: 'Route', right: 'Main Campus Loop'),
+
+                  // هذا السطر فيه نقطة خضراء لتمييز أن الحالة فعالة
                   _KeyValueRow(
                     left: 'Tracking Status',
                     right: 'GPS Active',
@@ -105,9 +140,10 @@ class _DriverTrackingActiveScreenState
                 ],
               ),
             ),
+
             const SizedBox(height: 12),
 
-            // ✅ Elapsed Time
+            // بطاقة الوقت المنقضي
             _Card(
               child: Column(
                 children: [
@@ -116,6 +152,8 @@ class _DriverTrackingActiveScreenState
                     style: TextStyle(color: Colors.black54, fontSize: 12),
                   ),
                   const SizedBox(height: 8),
+
+                  // هذا النص يتغير كل ثانية لأن قيمة elapsed تتغير
                   Text(
                     elapsed,
                     style: const TextStyle(
@@ -127,9 +165,10 @@ class _DriverTrackingActiveScreenState
                 ],
               ),
             ),
+
             const SizedBox(height: 12),
 
-            // ✅ GPS Updates row
+            // بطاقة توضح حالة تحديثات الموقع
             _Card(
               child: Row(
                 children: const [
@@ -155,14 +194,16 @@ class _DriverTrackingActiveScreenState
                 ],
               ),
             ),
+
             const SizedBox(height: 16),
 
-            // ✅ Stop Tracking red button
+            // زر إيقاف التتبع
             SizedBox(
               height: 50,
               child: ElevatedButton.icon(
                 onPressed: () {
-                  // ✅ ننهي التتبع ونوديه لشاشة النهاية
+                  // عند الضغط ننهي التتبع من ناحية الواجهة
+                  // ثم ننتقل لشاشة نهاية الجلسة مع استبدال الصفحة الحالية
                   Navigator.pushReplacementNamed(
                     context,
                     AppRoutes.trackingSessionEnd,
@@ -187,6 +228,8 @@ class _DriverTrackingActiveScreenState
   }
 }
 
+// هذا عنصر بطاقة موحد لتقليل تكرار تصميم البطاقات
+// نستخدمه لأي جزء نريد له نفس الشكل (خلفية + حدود + ظل)
 class _Card extends StatelessWidget {
   final Widget child;
 
@@ -213,9 +256,13 @@ class _Card extends StatelessWidget {
   }
 }
 
+// هذا عنصر صف يعرض معلومة على اليسار وقيمتها على اليمين
+// ويوفر خيار إضافة نقطة خضراء قبل القيمة لتوضيح أن الحالة فعّالة
 class _KeyValueRow extends StatelessWidget {
   final String left;
   final String right;
+
+  // إذا كانت صحيحة يتم عرض نقطة خضراء قبل القيمة
   final bool rightGreenDot;
 
   const _KeyValueRow({
@@ -227,15 +274,19 @@ class _KeyValueRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
+      // مسافة أسفل كل صف حتى لا تلتصق الصفوف ببعض
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
         children: [
+          // نص العنوان يأخذ المساحة المتاحة
           Expanded(
             child: Text(
               left,
               style: const TextStyle(color: Colors.black54, fontSize: 12),
             ),
           ),
+
+          // إذا الخيار مفعل نضيف نقطة خضراء قبل القيمة
           if (rightGreenDot) ...[
             Container(
               height: 8,
@@ -247,6 +298,8 @@ class _KeyValueRow extends StatelessWidget {
             ),
             const SizedBox(width: 6),
           ],
+
+          // نص القيمة
           Text(
             right,
             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
