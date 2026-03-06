@@ -6,11 +6,6 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../../app/app_routes.dart';
 import '../../app/app_theme.dart';
 
-// هذه شاشة الطالب الرئيسية
-// تحتوي على:
-// 1) خريطة تعرض موقع الحافلة إن وجدت
-// 2) رسالة أعلى الشاشة إذا لا توجد حافلات نشطة
-// 3) بطاقة معلومات أسفل الشاشة فيها تفاصيل الرحلة وأزرار التنقل
 class StudentHomeScreen extends StatefulWidget {
   const StudentHomeScreen({super.key});
 
@@ -19,31 +14,30 @@ class StudentHomeScreen extends StatefulWidget {
 }
 
 class _StudentHomeScreenState extends State<StudentHomeScreen> {
-  // هذا الموقع الافتراضي لفتح الخريطة على مركز الجامعة
   static final LatLng unitenCenter = LatLng(2.9766, 101.7331);
 
-  // هذا المتغير يمنع تكرار رسالة "لا توجد حافلات" بعد إغلاقها
-  // يعني إذا المستخدم ضغط إغلاق، تختفي الرسالة ولا ترجع إلا إذا خرج ورجع للصفحة
   bool _bannerDismissed = false;
 
-  // هذا بث مباشر من قاعدة البيانات
-  // يجلب أول جلسة قيادتها حالتها نشطة
-  // إذا لا توجد جلسة نشطة، يرجع قائمة فارغة
-  Stream<QuerySnapshot<Map<String, dynamic>>> _activeSessionStream() {
+  Stream<QuerySnapshot<Map<String, dynamic>>> _latestSessionStream() {
     return FirebaseFirestore.instance
         .collection('drivingSessions')
-        .where('status', isEqualTo: 'active')
+        .orderBy('startTime', descending: true)
         .limit(1)
+        .snapshots();
+  }
+
+  Stream<QuerySnapshot<Map<String, dynamic>>> _stopsStream() {
+    return FirebaseFirestore.instance
+        .collection('stops')
+        .orderBy('order')
         .snapshots();
   }
 
   @override
   Widget build(BuildContext context) {
-    // نستخدم عنصر يبني الواجهة بناءً على التغييرات القادمة من قاعدة البيانات مباشرة
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _activeSessionStream(),
+      stream: _latestSessionStream(),
       builder: (context, snapshot) {
-        // إذا حصل خطأ أثناء القراءة من قاعدة البيانات نعرض رسالة للمستخدم
         if (snapshot.hasError) {
           return Scaffold(
             appBar: AppBar(
@@ -62,33 +56,33 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
           );
         }
 
-        // هذا يعني أن البيانات ما زالت قيد التحميل
         final bool loading =
             snapshot.connectionState == ConnectionState.waiting;
 
-        // نحدد هل توجد جلسة نشطة أم لا
-        // لازم نتأكد أولًا أن البيانات موجودة ثم نتأكد أن القائمة ليست فارغة
-        final bool hasActiveSession =
+        final bool hasSessionDoc =
             snapshot.hasData && snapshot.data!.docs.isNotEmpty;
 
-        // إذا توجد جلسة نشطة نخزن بياناتها هنا
         Map<String, dynamic>? sessionData;
-        if (hasActiveSession) {
+        if (hasSessionDoc) {
           sessionData = snapshot.data!.docs.first.data();
         }
 
-        // نحاول استخراج آخر موقع مسجل للحافلة من بيانات الجلسة
-        // يجب أن يكون مخزن في قاعدة البيانات كنقطة جغرافية
+        bool hasActiveSession = false;
         LatLng? busPosition;
+
         if (sessionData != null) {
+          final dynamic endTime = sessionData['endTime'];
           final GeoPoint? gp = sessionData['lastLocation'] as GeoPoint?;
-          if (gp != null) {
+
+          final bool sessionNotEnded = endTime == null;
+          final bool hasLocation = gp != null;
+
+          if (sessionNotEnded && hasLocation) {
+            hasActiveSession = true;
             busPosition = LatLng(gp.latitude, gp.longitude);
           }
         }
 
-        // قيم افتراضية تظهر في بطاقة المعلومات إذا لا توجد حافلة نشطة
-        // الهدف: البطاقة تبقى ظاهرة دائمًا لكن البيانات تكون فارغة
         String busName = '__';
         String routeName = '__';
         String currentStop = '__';
@@ -96,21 +90,17 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
         String etaText = '__';
         String distanceText = '__';
 
-        // إذا توجد بيانات جلسة، نستخرج المعلومات منها لعرضها في البطاقة
         if (sessionData != null) {
           final String? bn = sessionData['busName'] as String?;
           final String? rn = sessionData['routeName'] as String?;
           final String? cs = sessionData['currentStopName'] as String?;
           final String? ns = sessionData['nextStopName'] as String?;
 
-          // نتأكد من أن النص ليس فارغًا قبل الاعتماد عليه
           if (bn != null && bn.trim().isNotEmpty) busName = bn.trim();
           if (rn != null && rn.trim().isNotEmpty) routeName = rn.trim();
           if (cs != null && cs.trim().isNotEmpty) currentStop = cs.trim();
           if (ns != null && ns.trim().isNotEmpty) nextStop = ns.trim();
 
-          // زمن الوصول المتوقع قد يكون رقم صحيح أو رقم عشري
-          // نحوله لصيغة مناسبة للعرض
           final dynamic etaRaw = sessionData['etaMinutes'];
           if (etaRaw is int) {
             etaText = '$etaRaw mins';
@@ -118,15 +108,12 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
             etaText = '${etaRaw.toInt()} mins';
           }
 
-          // المسافة يجب أن تكون رقم
-          // نعرضها برقم عشري واحد
           final dynamic distRaw = sessionData['distanceKm'];
           if (distRaw is num) {
             distanceText = '${distRaw.toStringAsFixed(1)} km';
           }
         }
 
-        // واجهة الصفحة الرئيسية للطالب
         return Scaffold(
           appBar: AppBar(
             title: const Text('Live Bus Tracking'),
@@ -137,42 +124,97 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
           ),
           body: Stack(
             children: [
-              // الخريطة تأخذ الشاشة كلها بالخلفية
               Positioned.fill(
-                child: FlutterMap(
-                  options: MapOptions(
-                    initialCenter: unitenCenter,
-                    initialZoom: 16,
-                  ),
-                  children: [
-                    // طبقة الخريطة الأساسية من مزود خرائط مفتوح
-                    TileLayer(
-                      urlTemplate:
-                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                      userAgentPackageName: 'com.example.unibus',
-                    ),
+                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+                  stream: _stopsStream(),
+                  builder: (context, stopsSnapshot) {
+                    final List<Marker> stopMarkers = [];
+                    final List<LatLng> routePoints = [];
 
-                    // طبقة العلامات: نضيف علامة للحافلة فقط إذا كانت نشطة ولدينا موقع
-                    MarkerLayer(
-                      markers: [
-                        if (hasActiveSession && busPosition != null)
+                    if (stopsSnapshot.hasData) {
+                      final stopsDocs = stopsSnapshot.data!.docs;
+
+                      for (final doc in stopsDocs) {
+                        final data = doc.data();
+
+                        final dynamic latRaw = data['latitude'];
+                        final dynamic lngRaw = data['longitude'];
+
+                        if (latRaw is! num || lngRaw is! num) {
+                          continue;
+                        }
+
+                        final LatLng stopPoint = LatLng(
+                          latRaw.toDouble(),
+                          lngRaw.toDouble(),
+                        );
+
+                        routePoints.add(stopPoint);
+
+                        stopMarkers.add(
                           Marker(
-                            point: busPosition,
-                            width: 46,
-                            height: 46,
+                            point: stopPoint,
+                            width: 20,
+                            height: 20,
                             child: const Icon(
-                              Icons.location_on,
-                              size: 46,
-                              color: Colors.red,
+                              Icons.trip_origin,
+                              size: 18,
+                              color: Colors.blue,
                             ),
                           ),
+                        );
+                      }
+                    }
+
+                    return FlutterMap(
+                      options: MapOptions(
+                        initialCenter: unitenCenter,
+                        initialZoom: 15.8,
+                      ),
+                      children: [
+                        TileLayer(
+                          urlTemplate:
+                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                          userAgentPackageName: 'com.example.unibus',
+                        ),
+
+                        // المسار يظهر فقط إذا فيه باص شغال
+                        if (hasActiveSession && routePoints.isNotEmpty)
+                          PolylineLayer(
+                            polylines: [
+                              Polyline(
+                                points: routePoints,
+                                strokeWidth: 4,
+                                color: AppTheme.primaryBlue,
+                              ),
+                            ],
+                          ),
+
+                        // المواقف
+                        MarkerLayer(markers: stopMarkers),
+
+                        // الباص
+                        MarkerLayer(
+                          markers: [
+                            if (hasActiveSession && busPosition != null)
+                              Marker(
+                                point: busPosition,
+                                width: 44,
+                                height: 44,
+                                child: const Icon(
+                                  Icons.directions_bus,
+                                  size: 40,
+                                  color: Colors.red,
+                                ),
+                              ),
+                          ],
+                        ),
                       ],
-                    ),
-                  ],
+                    );
+                  },
                 ),
               ),
 
-              // إذا كانت البيانات قيد التحميل نظهر شريط بسيط أعلى الشاشة
               if (loading)
                 Positioned(
                   left: 14,
@@ -193,8 +235,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   ),
                 ),
 
-              // إذا لا توجد حافلة نشطة ولم يغلق المستخدم الرسالة ولم نكن في التحميل
-              // نظهر رسالة "لا توجد حافلات نشطة"
               if (!hasActiveSession && !_bannerDismissed && !loading)
                 Positioned(
                   left: 14,
@@ -202,7 +242,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   top: 14,
                   child: _NoBusBanner(
                     onClose: () {
-                      // عند الإغلاق نخزن أن المستخدم أغلق الرسالة
                       setState(() {
                         _bannerDismissed = true;
                       });
@@ -210,8 +249,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   ),
                 ),
 
-              // بطاقة المعلومات السفلية تظهر دائمًا
-              // إذا لا توجد حافلة ستظهر القيم الافتراضية
               Align(
                 alignment: Alignment.bottomCenter,
                 child: SafeArea(
@@ -223,16 +260,12 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                     nextStop: nextStop,
                     etaText: etaText,
                     distanceText: distanceText,
-
-                    // زر الإشعارات يعمل دائمًا وينقل لصفحة إعدادات الإشعارات
                     onNotificationsTap: () {
                       Navigator.pushNamed(
                         context,
                         AppRoutes.studentNotifications,
                       );
                     },
-
-                    // زر الملاحظات يعمل دائمًا وينقل لصفحة الملاحظات
                     onFeedbackTap: () {
                       Navigator.pushNamed(context, AppRoutes.studentFeedback);
                     },
@@ -247,8 +280,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
   }
 }
 
-// هذا شريط تنبيه أعلى الشاشة يوضح أنه لا توجد حافلات نشطة
-// يحتوي على زر إغلاق حتى يتمكن المستخدم من إخفائه
 class _NoBusBanner extends StatelessWidget {
   final VoidCallback onClose;
 
@@ -296,9 +327,6 @@ class _NoBusBanner extends StatelessWidget {
   }
 }
 
-// هذه بطاقة المعلومات السفلية
-// تعرض تفاصيل الرحلة الحالية مثل اسم الحافلة والمسار والمحطة الحالية والقادمة
-// وتحتوي على أزرار للانتقال لصفحات أخرى
 class _BottomInfoCard extends StatelessWidget {
   final VoidCallback onNotificationsTap;
   final VoidCallback onFeedbackTap;
@@ -324,7 +352,6 @@ class _BottomInfoCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      // تأخذ عرض الشاشة بالكامل
       width: double.infinity,
       padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
       decoration: BoxDecoration(
@@ -341,10 +368,8 @@ class _BottomInfoCard extends StatelessWidget {
         ],
       ),
       child: Column(
-        // يجعل البطاقة تأخذ حجم المحتوى فقط وليس كامل الشاشة
         mainAxisSize: MainAxisSize.min,
         children: [
-          // الجزء العلوي: أيقونة + اسم الحافلة + اسم المسار
           Row(
             children: [
               Container(
@@ -386,7 +411,6 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // بطاقة صغيرة تعرض الموقع الحالي والمحطة القادمة
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -411,7 +435,6 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 10),
 
-          // بطاقة زمن الوصول والمسافة
           Row(
             children: [
               Expanded(
@@ -433,7 +456,6 @@ class _BottomInfoCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
 
-          // أزرار التنقل
           Row(
             children: [
               Expanded(
@@ -476,7 +498,6 @@ class _BottomInfoCard extends StatelessWidget {
   }
 }
 
-// عنصر صغير يعرض عنوان وقيمته تحته
 class _LabelValue extends StatelessWidget {
   final String label;
   final String value;
@@ -506,7 +527,6 @@ class _LabelValue extends StatelessWidget {
   }
 }
 
-// بطاقة صغيرة لعرض قيمة مختصرة مثل زمن الوصول أو المسافة
 class _MiniStatCard extends StatelessWidget {
   final String title;
   final String value;
