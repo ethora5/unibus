@@ -70,20 +70,9 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
         throw Exception('Driver data not found in database.');
       }
 
-      final Map<String, dynamic> driverData = driverQuery.docs.first.data();
-      final String driverName =
-          (driverData['name'] as String?)?.trim().isNotEmpty == true
-          ? (driverData['name'] as String).trim()
-          : 'Driver';
-
       if (!mounted) return;
 
-      // رسالة ترحيب
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Welcome, $driverName')));
-
-      // الانتقال إلى لوحة السائق
+      // الانتقال إلى لوحة السائق بدون أي SnackBar
       Navigator.pushReplacementNamed(context, AppRoutes.driverDashboard);
     } on FirebaseAuthException catch (e) {
       String message = 'Login failed. Please try again.';

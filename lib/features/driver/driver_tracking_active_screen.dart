@@ -1,14 +1,17 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+
 import '../../../app/app_routes.dart';
 import '../../../app/app_theme.dart';
 
 // هذه شاشة التتبع النشط للسائق
 // الهدف منها:
 // 1) إظهار أن التتبع شغال
-// 2) عرض تفاصيل الجلسة
-// 3) عرض الوقت المنقضي منذ بدء التتبع
-// 4) توفير زر لإيقاف التتبع والانتقال لشاشة إنهاء الجلسة
+// 2) عرض تفاصيل الجلسة الفعلية القادمة من الشاشة السابقة
+// 3) إنشاء session فعلية وتغيير حالة الباص إلى in_use
+// 4) منع الخروج من الصفحة إلا عند الضغط على Stop Tracking
+// 5) عند الإيقاف يتم إنهاء الجلسة وإرجاع الباص إلى available
 class DriverTrackingActiveScreen extends StatefulWidget {
   const DriverTrackingActiveScreen({super.key});
 
@@ -19,209 +22,458 @@ class DriverTrackingActiveScreen extends StatefulWidget {
 
 class _DriverTrackingActiveScreenState
     extends State<DriverTrackingActiveScreen> {
-  // مؤقت يتم تشغيله لتحديث الوقت المنقضي كل ثانية
-  late Timer timer;
+  // مؤقت لتحديث الوقت المنقضي كل ثانية
+  Timer? timer;
 
-  // عدّاد الثواني منذ فتح الصفحة (يمثل مدة التتبع بشكل مبسط)
+  // عداد الثواني
   int seconds = 0;
+
+  // بيانات الجلسة القادمة من الشاشة السابقة
+  String driverName = 'Driver';
+  String busId = 'Bus';
+  String routeName = 'Route';
+  String? busDocId;
+
+  // حتى لا نعيد قراءة arguments أكثر من مرة
+  bool _argsLoaded = false;
+
+  // حتى لا نعيد بدء الجلسة أكثر من مرة
+  bool _sessionStarted = false;
+
+  // id الخاص بالجلسة الحالية في Firestore
+  String? sessionDocId;
+
+  // حالة بدء الجلسة / إيقافها
+  bool isStartingSession = true;
+  bool isStoppingSession = false;
+
+  // رسالة خطأ إن وجدت
+  String? sessionError;
 
   @override
   void initState() {
     super.initState();
 
-    // تشغيل مؤقت يتكرر كل ثانية
-    // كل ثانية نزيد العداد ونبني الواجهة من جديد لتحديث الوقت المعروض
+    // تشغيل المؤقت كل ثانية
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
-      setState(() => seconds++);
+      if (!mounted) return;
+
+      // نعد الوقت فقط إذا الجلسة بدأت فعلاً وما زلنا لا نوقفها
+      if (_sessionStarted && !isStoppingSession) {
+        setState(() => seconds++);
+      }
     });
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+
+    if (_argsLoaded) return;
+
+    final args =
+        ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
+
+    if (args != null) {
+      driverName = (args['driverName'] as String?)?.trim().isNotEmpty == true
+          ? (args['driverName'] as String).trim()
+          : 'Driver';
+
+      busId = (args['busId'] as String?)?.trim().isNotEmpty == true
+          ? (args['busId'] as String).trim()
+          : 'Bus';
+
+      routeName = (args['routeName'] as String?)?.trim().isNotEmpty == true
+          ? (args['routeName'] as String).trim()
+          : 'Route';
+
+      busDocId = args['busDocId'] as String?;
+    }
+
+    _argsLoaded = true;
+
+    // بدء الجلسة الفعلية بعد استلام البيانات
+    _startTrackingSession();
+  }
+
+  @override
   void dispose() {
-    // إيقاف المؤقت عند الخروج من الصفحة لتجنب استمرار عمله بالخلفية
-    timer.cancel();
+    timer?.cancel();
     super.dispose();
   }
 
-  // تحويل عدد الثواني إلى صيغة وقت جاهزة للعرض
-  // هنا يتم عرضها بصيغة ساعات ثابتة مع دقائق وثواني
+  // تحويل عدد الثواني إلى HH:MM:SS
   String get elapsed {
-    // حساب الدقائق من إجمالي الثواني
-    final int m = seconds ~/ 60;
+    final int hours = seconds ~/ 3600;
+    final int minutes = (seconds % 3600) ~/ 60;
+    final int secs = seconds % 60;
 
-    // حساب الثواني المتبقية بعد استخراج الدقائق
-    final int s = seconds % 60;
+    final String hh = hours.toString().padLeft(2, '0');
+    final String mm = minutes.toString().padLeft(2, '0');
+    final String ss = secs.toString().padLeft(2, '0');
 
-    // تنسيق الدقائق ليكون دائماً رقمين
-    final String mm = m.toString().padLeft(2, '0');
+    return '$hh:$mm:$ss';
+  }
 
-    // تنسيق الثواني ليكون دائماً رقمين
-    final String ss = s.toString().padLeft(2, '0');
+  // بدء session فعلية وتحديث حالة الباص
+  Future<void> _startTrackingSession() async {
+    if (_sessionStarted) return;
 
-    // إرجاع النص النهائي للعرض
-    return '00:$mm:$ss';
+    if (busDocId == null || busDocId!.trim().isEmpty) {
+      setState(() {
+        isStartingSession = false;
+        sessionError = 'Bus document ID is missing.';
+      });
+      return;
+    }
+
+    try {
+      final FirebaseFirestore firestore = FirebaseFirestore.instance;
+      final DocumentReference<Map<String, dynamic>> busRef = firestore
+          .collection('buses')
+          .doc(busDocId);
+
+      final DocumentReference<Map<String, dynamic>> sessionRef = firestore
+          .collection('driving_sessions')
+          .doc();
+
+      final Timestamp now = Timestamp.now();
+
+      await firestore.runTransaction((transaction) async {
+        final busSnapshot = await transaction.get(busRef);
+
+        if (!busSnapshot.exists) {
+          throw Exception('Selected bus was not found.');
+        }
+
+        final busData = busSnapshot.data();
+        final currentStatus =
+            (busData?['status'] as String?)?.trim().toLowerCase() ?? '';
+
+        if (currentStatus != 'available') {
+          throw Exception('This bus is no longer available.');
+        }
+
+        // إنشاء session
+        transaction.set(sessionRef, {
+          'driverName': driverName,
+          'busId': busId,
+          'busDocId': busDocId,
+          'routeName': routeName,
+          'startTime': now,
+          'endTime': null,
+          'durationSeconds': 0,
+          'status': 'active',
+          'createdAt': now,
+        });
+
+        // تحديث الباص إلى in_use
+        transaction.update(busRef, {
+          'status': 'in_use',
+          'assignedDriverName': driverName,
+          'currentSessionId': sessionRef.id,
+          'updatedAt': now,
+        });
+      });
+
+      if (!mounted) return;
+
+      setState(() {
+        sessionDocId = sessionRef.id;
+        _sessionStarted = true;
+        isStartingSession = false;
+        sessionError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        isStartingSession = false;
+        sessionError = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
+  // إيقاف session وإرجاع الباص available
+  Future<void> _stopTracking() async {
+    if (isStoppingSession) return;
+
+    if (busDocId == null || busDocId!.trim().isEmpty) {
+      setState(() {
+        sessionError = 'Bus document ID is missing.';
+      });
+      return;
+    }
+
+    if (sessionDocId == null || sessionDocId!.trim().isEmpty) {
+      setState(() {
+        sessionError = 'Session ID is missing.';
+      });
+      return;
+    }
+
+    setState(() {
+      isStoppingSession = true;
+      sessionError = null;
+    });
+
+    try {
+      final FirebaseFirestore firestore = FirebaseFirestore.instance;
+
+      final DocumentReference<Map<String, dynamic>> busRef = firestore
+          .collection('buses')
+          .doc(busDocId);
+
+      final DocumentReference<Map<String, dynamic>> sessionRef = firestore
+          .collection('driving_sessions')
+          .doc(sessionDocId);
+
+      final Timestamp now = Timestamp.now();
+
+      await firestore.runTransaction((transaction) async {
+        final busSnapshot = await transaction.get(busRef);
+        final sessionSnapshot = await transaction.get(sessionRef);
+
+        if (!busSnapshot.exists) {
+          throw Exception('Bus not found.');
+        }
+
+        if (!sessionSnapshot.exists) {
+          throw Exception('Session not found.');
+        }
+
+        // إنهاء الجلسة
+        transaction.update(sessionRef, {
+          'endTime': now,
+          'durationSeconds': seconds,
+          'status': 'completed',
+          'updatedAt': now,
+        });
+
+        // إعادة الباص إلى available
+        transaction.update(busRef, {
+          'status': 'available',
+          'assignedDriverName': null,
+          'currentSessionId': null,
+          'updatedAt': now,
+        });
+      });
+
+      if (!mounted) return;
+
+      Navigator.pushReplacementNamed(
+        context,
+        AppRoutes.trackingSessionEnd,
+        arguments: {
+          'driverName': driverName,
+          'busId': busId,
+          'busDocId': busDocId,
+          'routeName': routeName,
+          'elapsedSeconds': seconds,
+          'sessionDocId': sessionDocId,
+        },
+      );
+    } catch (e) {
+      if (!mounted) return;
+
+      setState(() {
+        isStoppingSession = false;
+        sessionError = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        // عنوان الصفحة
-        title: const Text('Tracking Active'),
-
-        // زر رجوع للصفحة السابقة
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pop(context),
+    return PopScope(
+      // منع الخروج بزر الرجوع
+      canPop: false,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Tracking Active'),
+          automaticallyImplyLeading: false,
         ),
-      ),
-
-      // حماية المحتوى من شريط الحالة
-      body: SafeArea(
-        // قائمة قابلة للتمرير لتجنب قص المحتوى في الشاشات الصغيرة
-        child: ListView(
-          padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
-          children: [
-            // بطاقة خضراء توضح أن التتبع مفعل
-            Container(
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEAF7EE),
-                borderRadius: BorderRadius.circular(14),
-                border: Border.all(color: const Color(0xFFBFE6C9)),
-              ),
-              child: Column(
-                // عناصر البطاقة ثابتة ولا تحتاج إعادة بناء منفصلة
-                children: const [
-                  Icon(
-                    Icons.wifi_tethering,
-                    color: Color(0xFF1F9D55),
-                    size: 34,
-                  ),
-                  SizedBox(height: 10),
-                  Text(
-                    'Tracking Activated',
-                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 14),
-                  ),
-                  SizedBox(height: 6),
-                  Text(
-                    'GPS is actively tracking your\nlocation',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(color: Colors.black54, fontSize: 12),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 14),
-
-            // بطاقة تفاصيل الجلسة
-            _Card(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: const [
-                  Text(
-                    'Session Details',
-                    style: TextStyle(fontWeight: FontWeight.w900, fontSize: 13),
-                  ),
-                  SizedBox(height: 12),
-
-                  // صفوف معلومات ثابتة حالياً (تجريبية)
-                  _KeyValueRow(left: 'Driver Name', right: 'Bouq'),
-                  _KeyValueRow(left: 'Bus Number', right: 'Bus A'),
-                  _KeyValueRow(left: 'Route', right: 'Main Campus Loop'),
-
-                  // هذا السطر فيه نقطة خضراء لتمييز أن الحالة فعالة
-                  _KeyValueRow(
-                    left: 'Tracking Status',
-                    right: 'GPS Active',
-                    rightGreenDot: true,
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // بطاقة الوقت المنقضي
-            _Card(
-              child: Column(
-                children: [
-                  const Text(
-                    'Elapsed Time',
-                    style: TextStyle(color: Colors.black54, fontSize: 12),
-                  ),
-                  const SizedBox(height: 8),
-
-                  // هذا النص يتغير كل ثانية لأن قيمة elapsed تتغير
-                  Text(
-                    elapsed,
-                    style: const TextStyle(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w900,
-                      color: AppTheme.primaryBlue,
+        body: SafeArea(
+          child: ListView(
+            padding: const EdgeInsets.fromLTRB(18, 18, 18, 18),
+            children: [
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEAF7EE),
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(color: const Color(0xFFBFE6C9)),
+                ),
+                child: Column(
+                  children: [
+                    const Icon(
+                      Icons.wifi_tethering,
+                      color: Color(0xFF1F9D55),
+                      size: 34,
                     ),
-                  ),
-                ],
-              ),
-            ),
-
-            const SizedBox(height: 12),
-
-            // بطاقة توضح حالة تحديثات الموقع
-            _Card(
-              child: Row(
-                children: const [
-                  Icon(Icons.gps_fixed, color: Colors.black54, size: 18),
-                  SizedBox(width: 10),
-                  Expanded(
-                    child: Text(
-                      'GPS Updates',
+                    const SizedBox(height: 10),
+                    const Text(
+                      'Tracking Activated',
                       style: TextStyle(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w800,
+                        fontWeight: FontWeight.w900,
+                        fontSize: 14,
                       ),
                     ),
+                    const SizedBox(height: 6),
+                    Text(
+                      isStartingSession
+                          ? 'Starting tracking session...'
+                          : 'GPS is actively tracking your\nlocation',
+                      textAlign: TextAlign.center,
+                      style: const TextStyle(
+                        color: Colors.black54,
+                        fontSize: 12,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 14),
+
+              if (sessionError != null) ...[
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
                   ),
-                  Text(
-                    'Active',
-                    style: TextStyle(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFF1F1),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: const Color(0xFFFFD6D6)),
+                  ),
+                  child: Text(
+                    sessionError!,
+                    style: const TextStyle(
+                      color: Colors.red,
                       fontSize: 12,
-                      fontWeight: FontWeight.w800,
-                      color: AppTheme.primaryBlue,
+                      fontWeight: FontWeight.w600,
                     ),
                   ),
-                ],
+                ),
+                const SizedBox(height: 12),
+              ],
+
+              _Card(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text(
+                      'Session Details',
+                      style: TextStyle(
+                        fontWeight: FontWeight.w900,
+                        fontSize: 13,
+                      ),
+                    ),
+                    const SizedBox(height: 12),
+
+                    _KeyValueRow(left: 'Driver Name', right: driverName),
+                    _KeyValueRow(left: 'Bus Number', right: busId),
+                    _KeyValueRow(left: 'Route', right: routeName),
+
+                    _KeyValueRow(
+                      left: 'Tracking Status',
+                      right: isStartingSession ? 'Starting...' : 'GPS Active',
+                      rightGreenDot: !isStartingSession,
+                    ),
+                  ],
+                ),
               ),
-            ),
 
-            const SizedBox(height: 16),
+              const SizedBox(height: 12),
 
-            // زر إيقاف التتبع
-            SizedBox(
-              height: 50,
-              child: ElevatedButton.icon(
-                onPressed: () {
-                  // عند الضغط ننهي التتبع من ناحية الواجهة
-                  // ثم ننتقل لشاشة نهاية الجلسة مع استبدال الصفحة الحالية
-                  Navigator.pushReplacementNamed(
-                    context,
-                    AppRoutes.trackingSessionEnd,
-                  );
-                },
-                icon: const Icon(Icons.stop_circle_outlined),
-                label: const Text('Stop Tracking'),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: const Color(0xFFE11D48),
-                  foregroundColor: Colors.white,
-                  elevation: 0,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(12),
+              _Card(
+                child: Column(
+                  children: [
+                    const Text(
+                      'Elapsed Time',
+                      style: TextStyle(color: Colors.black54, fontSize: 12),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      elapsed,
+                      style: const TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w900,
+                        color: AppTheme.primaryBlue,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 12),
+
+              _Card(
+                child: Row(
+                  children: [
+                    const Icon(
+                      Icons.gps_fixed,
+                      color: Colors.black54,
+                      size: 18,
+                    ),
+                    const SizedBox(width: 10),
+                    const Expanded(
+                      child: Text(
+                        'GPS Updates',
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w800,
+                        ),
+                      ),
+                    ),
+                    Text(
+                      isStartingSession ? 'Starting' : 'Active',
+                      style: const TextStyle(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w800,
+                        color: AppTheme.primaryBlue,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              const SizedBox(height: 16),
+
+              SizedBox(
+                height: 50,
+                child: ElevatedButton.icon(
+                  onPressed: (isStartingSession || isStoppingSession)
+                      ? null
+                      : _stopTracking,
+                  icon: isStoppingSession
+                      ? const SizedBox(
+                          height: 18,
+                          width: 18,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2.2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Icon(Icons.stop_circle_outlined),
+                  label: Text(
+                    isStoppingSession ? 'Stopping...' : 'Stop Tracking',
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: const Color(0xFFE11D48),
+                    foregroundColor: Colors.white,
+                    disabledBackgroundColor: const Color(0xFFE3E7EF),
+                    disabledForegroundColor: Colors.black38,
+                    elevation: 0,
+                    shape: RoundedRectangleBorder(
+                      borderRadius: BorderRadius.circular(12),
+                    ),
                   ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -229,7 +481,6 @@ class _DriverTrackingActiveScreenState
 }
 
 // هذا عنصر بطاقة موحد لتقليل تكرار تصميم البطاقات
-// نستخدمه لأي جزء نريد له نفس الشكل (خلفية + حدود + ظل)
 class _Card extends StatelessWidget {
   final Widget child;
 
@@ -257,12 +508,9 @@ class _Card extends StatelessWidget {
 }
 
 // هذا عنصر صف يعرض معلومة على اليسار وقيمتها على اليمين
-// ويوفر خيار إضافة نقطة خضراء قبل القيمة لتوضيح أن الحالة فعّالة
 class _KeyValueRow extends StatelessWidget {
   final String left;
   final String right;
-
-  // إذا كانت صحيحة يتم عرض نقطة خضراء قبل القيمة
   final bool rightGreenDot;
 
   const _KeyValueRow({
@@ -274,19 +522,15 @@ class _KeyValueRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      // مسافة أسفل كل صف حتى لا تلتصق الصفوف ببعض
       padding: const EdgeInsets.only(bottom: 10),
       child: Row(
         children: [
-          // نص العنوان يأخذ المساحة المتاحة
           Expanded(
             child: Text(
               left,
               style: const TextStyle(color: Colors.black54, fontSize: 12),
             ),
           ),
-
-          // إذا الخيار مفعل نضيف نقطة خضراء قبل القيمة
           if (rightGreenDot) ...[
             Container(
               height: 8,
@@ -298,8 +542,6 @@ class _KeyValueRow extends StatelessWidget {
             ),
             const SizedBox(width: 6),
           ],
-
-          // نص القيمة
           Text(
             right,
             style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w800),
