@@ -18,9 +18,10 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
 
   bool _bannerDismissed = false;
 
-  Stream<QuerySnapshot<Map<String, dynamic>>> _latestSessionStream() {
+  Stream<QuerySnapshot<Map<String, dynamic>>> _activeSessionStream() {
     return FirebaseFirestore.instance
-        .collection('drivingSessions')
+        .collection('driving_sessions')
+        .where('status', isEqualTo: 'active')
         .orderBy('startTime', descending: true)
         .limit(1)
         .snapshots();
@@ -33,10 +34,101 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
         .snapshots();
   }
 
+  // حساب المسافة بين نقطتين بالمتر
+  double _distanceMeters(LatLng a, LatLng b) {
+    const Distance distance = Distance();
+    return distance(a, b);
+  }
+
+  // تنسيق ETA بناءً على الثواني
+  String _formatEtaFromSeconds(double seconds) {
+    if (seconds.isNaN || seconds.isInfinite || seconds <= 0) {
+      return '--';
+    }
+
+    if (seconds < 60) {
+      return '${seconds.round()} sec';
+    }
+
+    final int minutes = (seconds / 60).ceil();
+    return '$minutes min';
+  }
+
+  // إيجاد أقرب موقف + الموقف التالي + المسافة + ETA
+  Map<String, String> _findCurrentNextEtaAndDistance({
+    required LatLng busPos,
+    required double speedMps,
+    required List<QueryDocumentSnapshot<Map<String, dynamic>>> stopsDocs,
+  }) {
+    if (stopsDocs.isEmpty) {
+      return {'current': '___', 'next': '--', 'distance': '--', 'eta': '--'};
+    }
+
+    final stops =
+        stopsDocs.map((doc) {
+            final d = doc.data();
+
+            return {
+              'name': (d['name'] ?? '--').toString(),
+              'order': ((d['order'] ?? 0) as num).toInt(),
+              'pos': LatLng(
+                (d['latitude'] as num).toDouble(),
+                (d['longitude'] as num).toDouble(),
+              ),
+            };
+          }).toList()
+          ..sort((a, b) => (a['order'] as int).compareTo(b['order'] as int));
+
+    double bestDistance = double.infinity;
+    int bestIndex = 0;
+
+    for (int i = 0; i < stops.length; i++) {
+      final LatLng stopPos = stops[i]['pos'] as LatLng;
+      final double d = _distanceMeters(busPos, stopPos);
+
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestIndex = i;
+      }
+    }
+
+    final String currentName = stops[bestIndex]['name'] as String;
+
+    // إذا ما فيه موقف بعده
+    if (bestIndex + 1 >= stops.length) {
+      return {
+        'current': currentName,
+        'next': '--',
+        'distance': '--',
+        'eta': '--',
+      };
+    }
+
+    final String nextName = stops[bestIndex + 1]['name'] as String;
+    final LatLng nextPos = stops[bestIndex + 1]['pos'] as LatLng;
+
+    final double distanceToNext = _distanceMeters(busPos, nextPos);
+    final String distanceText = '${distanceToNext.round()} m';
+
+    // إذا السرعة ضعيفة جدًا أو صفر، ما نحسب ETA
+    String etaText = '--';
+    if (speedMps > 0.5) {
+      final double etaSeconds = distanceToNext / speedMps;
+      etaText = _formatEtaFromSeconds(etaSeconds);
+    }
+
+    return {
+      'current': currentName,
+      'next': nextName,
+      'distance': distanceText,
+      'eta': etaText,
+    };
+  }
+
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _latestSessionStream(),
+      stream: _activeSessionStream(),
       builder: (context, snapshot) {
         if (snapshot.hasError) {
           return Scaffold(
@@ -69,49 +161,37 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
 
         bool hasActiveSession = false;
         LatLng? busPosition;
+        double currentSpeed = 0.0;
 
         if (sessionData != null) {
-          final dynamic endTime = sessionData['endTime'];
-          final GeoPoint? gp = sessionData['lastLocation'] as GeoPoint?;
+          final dynamic latRaw = sessionData['currentLatitude'];
+          final dynamic lngRaw = sessionData['currentLongitude'];
+          final dynamic speedRaw = sessionData['currentSpeed'];
+          final String status =
+              (sessionData['status'] as String?)?.trim().toLowerCase() ?? '';
 
-          final bool sessionNotEnded = endTime == null;
-          final bool hasLocation = gp != null;
+          final bool hasValidLocation = latRaw is num && lngRaw is num;
+          final bool isActive = status == 'active';
 
-          if (sessionNotEnded && hasLocation) {
+          if (speedRaw is num) {
+            currentSpeed = speedRaw.toDouble();
+          }
+
+          if (isActive && hasValidLocation) {
             hasActiveSession = true;
-            busPosition = LatLng(gp.latitude, gp.longitude);
+            busPosition = LatLng(latRaw.toDouble(), lngRaw.toDouble());
           }
         }
 
         String busName = '__';
         String routeName = '__';
-        String currentStop = '__';
-        String nextStop = '__';
-        String etaText = '__';
-        String distanceText = '__';
 
         if (sessionData != null) {
-          final String? bn = sessionData['busName'] as String?;
+          final String? bn = sessionData['busId'] as String?;
           final String? rn = sessionData['routeName'] as String?;
-          final String? cs = sessionData['currentStopName'] as String?;
-          final String? ns = sessionData['nextStopName'] as String?;
 
           if (bn != null && bn.trim().isNotEmpty) busName = bn.trim();
           if (rn != null && rn.trim().isNotEmpty) routeName = rn.trim();
-          if (cs != null && cs.trim().isNotEmpty) currentStop = cs.trim();
-          if (ns != null && ns.trim().isNotEmpty) nextStop = ns.trim();
-
-          final dynamic etaRaw = sessionData['etaMinutes'];
-          if (etaRaw is int) {
-            etaText = '$etaRaw mins';
-          } else if (etaRaw is num) {
-            etaText = '${etaRaw.toInt()} mins';
-          }
-
-          final dynamic distRaw = sessionData['distanceKm'];
-          if (distRaw is num) {
-            distanceText = '${distRaw.toStringAsFixed(1)} km';
-          }
         }
 
         return Scaffold(
@@ -129,7 +209,11 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                   stream: _stopsStream(),
                   builder: (context, stopsSnapshot) {
                     final List<Marker> stopMarkers = [];
-                    final List<LatLng> routePoints = [];
+
+                    String currentStopName = '___';
+                    String nextStopName = '--';
+                    String etaText = '--';
+                    String distanceText = '--';
 
                     if (stopsSnapshot.hasData) {
                       final stopsDocs = stopsSnapshot.data!.docs;
@@ -149,8 +233,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                           lngRaw.toDouble(),
                         );
 
-                        routePoints.add(stopPoint);
-
                         stopMarkers.add(
                           Marker(
                             point: stopPoint,
@@ -164,50 +246,82 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                           ),
                         );
                       }
+
+                      if (hasActiveSession && busPosition != null) {
+                        final result = _findCurrentNextEtaAndDistance(
+                          busPos: busPosition,
+                          speedMps: currentSpeed,
+                          stopsDocs: stopsDocs,
+                        );
+
+                        currentStopName = result['current'] ?? '___';
+                        nextStopName = result['next'] ?? '--';
+                        etaText = result['eta'] ?? '--';
+                        distanceText = result['distance'] ?? '--';
+                      }
                     }
 
-                    return FlutterMap(
-                      options: MapOptions(
-                        initialCenter: unitenCenter,
-                        initialZoom: 15.8,
-                      ),
+                    return Stack(
                       children: [
-                        TileLayer(
-                          urlTemplate:
-                              'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                          userAgentPackageName: 'com.example.unibus',
+                        FlutterMap(
+                          options: MapOptions(
+                            initialCenter: unitenCenter,
+                            initialZoom: 15.8,
+                          ),
+                          children: [
+                            TileLayer(
+                              urlTemplate:
+                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                              userAgentPackageName: 'com.example.unibus',
+                            ),
+
+                            // المواقف فقط
+                            MarkerLayer(markers: stopMarkers),
+
+                            // الباص النشط فقط
+                            MarkerLayer(
+                              markers: [
+                                if (hasActiveSession && busPosition != null)
+                                  Marker(
+                                    point: busPosition,
+                                    width: 44,
+                                    height: 44,
+                                    child: const Icon(
+                                      Icons.directions_bus,
+                                      size: 40,
+                                      color: Colors.red,
+                                    ),
+                                  ),
+                              ],
+                            ),
+                          ],
                         ),
 
-                        // المسار يظهر فقط إذا فيه باص شغال
-                        if (hasActiveSession && routePoints.isNotEmpty)
-                          PolylineLayer(
-                            polylines: [
-                              Polyline(
-                                points: routePoints,
-                                strokeWidth: 4,
-                                color: AppTheme.primaryBlue,
-                              ),
-                            ],
+                        Align(
+                          alignment: Alignment.bottomCenter,
+                          child: SafeArea(
+                            top: false,
+                            child: _BottomInfoCard(
+                              busName: busName,
+                              routeName: routeName,
+                              currentLocation: currentStopName,
+                              nextStop: nextStopName,
+                              etaText: etaText,
+                              distanceText: distanceText,
+                              onNotificationsTap: () {
+                                Navigator.pushNamed(
+                                  context,
+                                  AppRoutes.studentNotifications,
+                                );
+                              },
+                              onFeedbackTap: () {
+                                Navigator.pushNamed(
+                                  context,
+                                  AppRoutes.studentFeedback,
+                                );
+                              },
+                            ),
                           ),
-
-                        // المواقف
-                        MarkerLayer(markers: stopMarkers),
-
-                        // الباص
-                        MarkerLayer(
-                          markers: [
-                            if (hasActiveSession && busPosition != null)
-                              Marker(
-                                point: busPosition,
-                                width: 44,
-                                height: 44,
-                                child: const Icon(
-                                  Icons.directions_bus,
-                                  size: 40,
-                                  color: Colors.red,
-                                ),
-                              ),
-                          ],
                         ),
                       ],
                     );
@@ -248,30 +362,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                     },
                   ),
                 ),
-
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: SafeArea(
-                  top: false,
-                  child: _BottomInfoCard(
-                    busName: busName,
-                    routeName: routeName,
-                    currentLocation: currentStop,
-                    nextStop: nextStop,
-                    etaText: etaText,
-                    distanceText: distanceText,
-                    onNotificationsTap: () {
-                      Navigator.pushNamed(
-                        context,
-                        AppRoutes.studentNotifications,
-                      );
-                    },
-                    onFeedbackTap: () {
-                      Navigator.pushNamed(context, AppRoutes.studentFeedback);
-                    },
-                  ),
-                ),
-              ),
             ],
           ),
         );
@@ -410,7 +500,6 @@ class _BottomInfoCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-
           Container(
             padding: const EdgeInsets.all(12),
             decoration: BoxDecoration(
@@ -434,7 +523,6 @@ class _BottomInfoCard extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 10),
-
           Row(
             children: [
               Expanded(
@@ -455,7 +543,6 @@ class _BottomInfoCard extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-
           Row(
             children: [
               Expanded(
