@@ -5,6 +5,7 @@ import 'package:geolocator/geolocator.dart';
 
 import '../../../app/app_routes.dart';
 import '../../../app/app_theme.dart';
+import '../../../core/services/notification_event_service.dart';
 
 // هذه شاشة التتبع النشط للسائق
 // الهدف منها:
@@ -14,6 +15,7 @@ import '../../../app/app_theme.dart';
 // 4) بدء GPS updates الفعلية كل 5 ثواني وتخزين الموقع في Firestore
 // 5) منع الخروج من الصفحة إلا عند الضغط على Stop Tracking
 // 6) عند الإيقاف يتم إنهاء الجلسة وإرجاع الباص إلى available
+// 7) عند بدء الجلسة يتم إنشاء notification event لإشعار الطلاب أن باص جديد بدأ التتبع
 class DriverTrackingActiveScreen extends StatefulWidget {
   const DriverTrackingActiveScreen({super.key});
 
@@ -166,10 +168,6 @@ class _DriverTrackingActiveScreenState
     final bool allowed = await _checkAndRequestLocationPermission();
     if (!allowed) return;
 
-    setState(() {
-      gpsReady = true;
-    });
-
     await _stopGpsUpdates();
 
     // أول قراءة مباشرة
@@ -180,16 +178,21 @@ class _DriverTrackingActiveScreenState
         ),
       );
 
+      final bool saved = await _updateLiveLocation(firstPosition);
+
       if (!mounted) return;
 
-      setState(() {
-        currentPosition = firstPosition;
-      });
-
-      await _updateLiveLocation(firstPosition);
+      if (saved) {
+        setState(() {
+          currentPosition = firstPosition;
+          gpsReady = true;
+          sessionError = null;
+        });
+      }
     } catch (e) {
       if (!mounted) return;
       setState(() {
+        gpsReady = false;
         sessionError = 'Failed to get current location.';
       });
     }
@@ -203,16 +206,21 @@ class _DriverTrackingActiveScreenState
           ),
         );
 
+        final bool saved = await _updateLiveLocation(position);
+
         if (!mounted) return;
 
-        setState(() {
-          currentPosition = position;
-        });
-
-        await _updateLiveLocation(position);
+        if (saved) {
+          setState(() {
+            currentPosition = position;
+            gpsReady = true;
+            sessionError = null;
+          });
+        }
       } catch (e) {
         if (!mounted) return;
         setState(() {
+          gpsReady = false;
           sessionError = 'Failed to update GPS location.';
         });
       }
@@ -220,9 +228,9 @@ class _DriverTrackingActiveScreenState
   }
 
   // تحديث الموقع داخل Firestore
-  Future<void> _updateLiveLocation(Position position) async {
-    if (busDocId == null || busDocId!.trim().isEmpty) return;
-    if (sessionDocId == null || sessionDocId!.trim().isEmpty) return;
+  Future<bool> _updateLiveLocation(Position position) async {
+    if (busDocId == null || busDocId!.trim().isEmpty) return false;
+    if (sessionDocId == null || sessionDocId!.trim().isEmpty) return false;
 
     final FirebaseFirestore firestore = FirebaseFirestore.instance;
     final Timestamp now = Timestamp.now();
@@ -241,11 +249,15 @@ class _DriverTrackingActiveScreenState
         'currentSpeed': position.speed,
         'gpsUpdatedAt': now,
       });
+
+      return true;
     } catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
+        gpsReady = false;
         sessionError = 'Failed to update GPS location.';
       });
+      return false;
     }
   }
 
@@ -255,7 +267,7 @@ class _DriverTrackingActiveScreenState
     _gpsTimer = null;
   }
 
-  // بدء session فعلية وتحديث حالة الباص
+  // بدء session فعلية وتحديث حالة الباص + إنشاء notification event
   Future<void> _startTrackingSession() async {
     if (_sessionStarted) return;
 
@@ -269,6 +281,7 @@ class _DriverTrackingActiveScreenState
 
     try {
       final FirebaseFirestore firestore = FirebaseFirestore.instance;
+
       final DocumentReference<Map<String, dynamic>> busRef = firestore
           .collection('buses')
           .doc(busDocId);
@@ -315,6 +328,13 @@ class _DriverTrackingActiveScreenState
           'updatedAt': now,
         });
       });
+
+      // إنشاء notification event بعد نجاح إنشاء الجلسة
+      await NotificationEventService.createNewBusTrackingEvent(
+        sessionId: sessionRef.id,
+        busName: busId,
+        routeName: routeName,
+      );
 
       if (!mounted) return;
 
@@ -429,8 +449,40 @@ class _DriverTrackingActiveScreenState
 
   @override
   Widget build(BuildContext context) {
+    final bool showTrackingError = sessionError != null;
+    final bool showTrackingActive = gpsReady && currentPosition != null;
+
+    final Color statusBgColor = showTrackingError
+        ? const Color(0xFFFFF1F1)
+        : showTrackingActive
+        ? const Color(0xFFEAF7EE)
+        : const Color(0xFFF4F6F8);
+
+    final Color statusBorderColor = showTrackingError
+        ? const Color(0xFFFFD6D6)
+        : showTrackingActive
+        ? const Color(0xFFBFE6C9)
+        : const Color(0xFFD9E1E7);
+
+    final Color statusIconColor = showTrackingError
+        ? const Color(0xFFE11D48)
+        : showTrackingActive
+        ? const Color(0xFF1F9D55)
+        : Colors.grey;
+
+    final String statusTitle = showTrackingError
+        ? 'Tracking Problem'
+        : showTrackingActive
+        ? 'Tracking Activated'
+        : 'Starting Tracking';
+
+    final String statusSubtitle = showTrackingError
+        ? sessionError!
+        : showTrackingActive
+        ? 'GPS is actively tracking your\nlocation'
+        : 'Waiting for first GPS coordinate...';
+
     return PopScope(
-      // منع الخروج بزر الرجوع
       canPop: false,
       child: Scaffold(
         appBar: AppBar(
@@ -444,30 +496,30 @@ class _DriverTrackingActiveScreenState
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: const Color(0xFFEAF7EE),
+                  color: statusBgColor,
                   borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFFBFE6C9)),
+                  border: Border.all(color: statusBorderColor),
                 ),
                 child: Column(
                   children: [
-                    const Icon(
-                      Icons.wifi_tethering,
-                      color: Color(0xFF1F9D55),
+                    Icon(
+                      showTrackingError
+                          ? Icons.error_outline
+                          : Icons.wifi_tethering,
+                      color: statusIconColor,
                       size: 34,
                     ),
                     const SizedBox(height: 10),
-                    const Text(
-                      'Tracking Activated',
-                      style: TextStyle(
+                    Text(
+                      statusTitle,
+                      style: const TextStyle(
                         fontWeight: FontWeight.w900,
                         fontSize: 14,
                       ),
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      isStartingSession
-                          ? 'Starting tracking session...'
-                          : 'GPS is actively tracking your\nlocation',
+                      statusSubtitle,
                       textAlign: TextAlign.center,
                       style: const TextStyle(
                         color: Colors.black54,
@@ -515,11 +567,9 @@ class _DriverTrackingActiveScreenState
                       ),
                     ),
                     const SizedBox(height: 12),
-
                     _KeyValueRow(left: 'Driver Name', right: driverName),
                     _KeyValueRow(left: 'Bus Number', right: busId),
                     _KeyValueRow(left: 'Route', right: routeName),
-
                     _KeyValueRow(
                       left: 'Tracking Status',
                       right: gpsReady ? 'GPS Active' : 'Starting...',

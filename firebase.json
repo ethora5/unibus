@@ -1,1 +1,37 @@
-{"flutter":{"platforms":{"android":{"default":{"projectId":"unibus-4614a","appId":"1:949526283494:android:942ca383915ac6b903a727","fileOutput":"android/app/google-services.json"}},"dart":{"lib/firebase_options.dart":{"projectId":"unibus-4614a","configurations":{"android":"1:949526283494:android:942ca383915ac6b903a727","web":"1:949526283494:web:a7ccb57096ca382d03a727","windows":"1:949526283494:web:d9b2f5970780bf4d03a727"}}}}}}
+{
+  "flutter": {
+    "platforms": {
+      "android": {
+        "default": {
+          "projectId": "unibus-4614a",
+          "appId": "1:949526283494:android:942ca383915ac6b903a727",
+          "fileOutput": "android/app/google-services.json"
+        }
+      },
+      "dart": {
+        "lib/firebase_options.dart": {
+          "projectId": "unibus-4614a",
+          "configurations": {
+            "android": "1:949526283494:android:942ca383915ac6b903a727",
+            "web": "1:949526283494:web:a7ccb57096ca382d03a727",
+            "windows": "1:949526283494:web:d9b2f5970780bf4d03a727"
+          }
+        }
+      }
+    }
+  },
+  "functions": [
+    {
+      "source": "functions",
+      "codebase": "default",
+      "disallowLegacyRuntimeConfig": true,
+      "ignore": [
+        "node_modules",
+        ".git",
+        "firebase-debug.log",
+        "firebase-debug.*.log",
+        "*.local"
+      ]
+    }
+  ]
+}

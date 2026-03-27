@@ -2,86 +2,87 @@ import 'package:flutter/material.dart';
 import '../../app/app_routes.dart';
 import '../../app/app_theme.dart';
 
-// هذه الصفحة مسؤولة عن اختيار نوع المستخدم قبل الدخول للتطبيق.
-// المستخدم يحدد هل هو طالب أو سائق أو أدمن.
-// بناءً على الاختيار يتم نقله إلى الصفحة المناسبة.
+// صفحة اختيار الدور + زر About (أيقونة فقط)
 class RoleSelectionScreen extends StatelessWidget {
   const RoleSelectionScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
-    // الهيكل الأساسي للصفحة.
-    // يوفر لنا الخلفية العامة وتنظيم المحتوى.
     return Scaffold(
-      // يمنع العناصر من الدخول تحت شريط الحالة أو الجزء العلوي للشاشة.
       body: SafeArea(
-        // يجعل جميع محتويات الصفحة في المنتصف أفقيًا.
         child: Center(
-          // يحدد أقصى عرض للواجهة حتى لا تتمدد العناصر في الشاشات الكبيرة.
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 420),
-
-            // يضيف مسافة داخلية من اليمين واليسار لتحسين الشكل.
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 24),
-
-              // يستخدم لترتيب العناصر فوق بعضها بشكل عمودي.
               child: Column(
-                // يجعل العناصر في منتصف الشاشة عموديًا.
-                mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  // مسافة بسيطة في الأعلى لتحسين التوازن البصري.
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 10),
 
-                  // عنوان الصفحة الذي يوضح للمستخدم ما المطلوب منه.
-                  const Text(
-                    'Select Your Role',
-                    style: TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.black54,
+                  // زر About (أيقونة فقط)
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      _SmallAboutButton(
+                        onTap: () {
+                          Navigator.push(
+                            context,
+                            MaterialPageRoute(
+                              builder: (_) => const AboutAppScreen(),
+                            ),
+                          );
+                        },
+                      ),
+                    ],
+                  ),
+
+                  // المحتوى الأساسي
+                  Expanded(
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const SizedBox(height: 12),
+
+                        const Text(
+                          'Select Your Role',
+                          style: TextStyle(
+                            fontSize: 16,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.black54,
+                          ),
+                        ),
+
+                        const SizedBox(height: 22),
+
+                        _RoleButton(
+                          label: 'Student',
+                          onTap: () {
+                            Navigator.pushNamed(context, AppRoutes.studentHome);
+                          },
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        _RoleButton(
+                          label: 'Driver',
+                          onTap: () {
+                            Navigator.pushNamed(context, AppRoutes.driverLogin);
+                          },
+                        ),
+
+                        const SizedBox(height: 14),
+
+                        _RoleButton(
+                          label: 'Admin',
+                          onTap: () {
+                            Navigator.pushNamed(context, AppRoutes.adminLogin);
+                          },
+                        ),
+
+                        const SizedBox(height: 8),
+                      ],
                     ),
                   ),
-
-                  // مسافة بين العنوان والأزرار.
-                  const SizedBox(height: 22),
-
-                  // زر الطالب.
-                  // عند الضغط يتم الانتقال إلى الصفحة الرئيسية الخاصة بالطالب.
-                  _RoleButton(
-                    label: 'Student',
-                    onTap: () {
-                      // تنفيذ عملية الانتقال باستخدام اسم المسار المحدد مسبقًا.
-                      Navigator.pushNamed(context, AppRoutes.studentHome);
-                    },
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  // زر السائق.
-                  // ينقل المستخدم إلى صفحة تسجيل دخول السائق.
-                  _RoleButton(
-                    label: 'Driver',
-                    onTap: () {
-                      // الانتقال إلى صفحة تسجيل دخول السائق.
-                      Navigator.pushNamed(context, AppRoutes.driverLogin);
-                    },
-                  ),
-
-                  const SizedBox(height: 14),
-
-                  // زر الأدمن.
-                  // ينقل المستخدم إلى صفحة تسجيل دخول الأدمن.
-                  _RoleButton(
-                    label: 'Admin',
-                    onTap: () {
-                      // الانتقال إلى صفحة تسجيل دخول الأدمن.
-                      Navigator.pushNamed(context, AppRoutes.adminLogin);
-                    },
-                  ),
-
-                  // مسافة سفلية خفيفة لتحسين توزيع العناصر.
-                  const SizedBox(height: 8),
                 ],
               ),
             ),
@@ -92,48 +93,59 @@ class RoleSelectionScreen extends StatelessWidget {
   }
 }
 
-// هذا عنصر زر مخصص نستخدمه لتجنب تكرار نفس تصميم الزر.
-// يتم تمرير النص والدالة الخاصة بالضغط لكل زر.
-class _RoleButton extends StatelessWidget {
-  // النص الذي يظهر داخل الزر.
-  final String label;
+// زر About (أيقونة فقط)
+class _SmallAboutButton extends StatelessWidget {
+  final VoidCallback onTap;
 
-  // الدالة التي يتم تنفيذها عند الضغط على الزر.
+  const _SmallAboutButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Colors.white,
+      borderRadius: BorderRadius.circular(10),
+      elevation: 2,
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(10),
+        child: Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(10),
+            border: Border.all(color: AppTheme.cardBorder, width: 1.2),
+          ),
+          child: const Icon(
+            Icons.info_outline,
+            size: 18, // حجم صغير ومرتب
+            color: AppTheme.primaryBlue,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// زر الأدوار
+class _RoleButton extends StatelessWidget {
+  final String label;
   final VoidCallback onTap;
 
   const _RoleButton({required this.label, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    // عنصر يعطي تأثير بصري عند الضغط على الزر.
     return InkWell(
-      // عند الضغط يتم تنفيذ الدالة المرسلة.
       onTap: onTap,
-
-      // يحدد انحناء الحواف لتتطابق مع شكل الزر.
       borderRadius: BorderRadius.circular(10),
-
-      // يمثل جسم الزر الفعلي.
       child: Container(
-        // ارتفاع ثابت للزر.
         height: 52,
-
-        // يأخذ عرض المساحة المتاحة بالكامل.
         width: double.infinity,
-
-        // خصائص تصميم الزر من لون وحدود وانحناء.
         decoration: BoxDecoration(
-          // لون الخلفية أبيض.
           color: Colors.white,
-
-          // انحناء الحواف.
           borderRadius: BorderRadius.circular(10),
-
-          // رسم حدود للزر باستخدام لون من ملف التصميم العام.
           border: Border.all(color: AppTheme.cardBorder, width: 1.2),
         ),
-
-        // يوسّط النص داخل الزر.
         child: Center(
           child: Text(
             label,
@@ -142,6 +154,66 @@ class _RoleButton extends StatelessWidget {
               fontWeight: FontWeight.w600,
               color: Colors.black87,
             ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// صفحة About
+class AboutAppScreen extends StatelessWidget {
+  const AboutAppScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(title: const Text('About UniBus')),
+      body: SafeArea(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(18),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: const [
+              Text(
+                'UniBus',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.primaryBlue,
+                ),
+              ),
+              SizedBox(height: 10),
+
+              Text(
+                'UniBus is a real-time bus tracking system designed for university students. It allows users to track buses live, view routes, and know estimated arrival times.',
+                style: TextStyle(height: 1.6),
+              ),
+
+              SizedBox(height: 16),
+
+              Text('Features', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 6),
+
+              Text(
+                '• Live bus tracking\n'
+                '• View current and next stop\n'
+                '• ETA and distance calculation\n'
+                '• Student, Driver, Admin roles\n'
+                '• Notifications and feedback',
+                style: TextStyle(height: 1.6),
+              ),
+
+              SizedBox(height: 16),
+
+              Text('Purpose', style: TextStyle(fontWeight: FontWeight.bold)),
+              SizedBox(height: 6),
+
+              Text(
+                'The system improves transportation efficiency and reduces waiting time for students.',
+                style: TextStyle(height: 1.6),
+              ),
+            ],
           ),
         ),
       ),

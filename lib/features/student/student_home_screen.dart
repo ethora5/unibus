@@ -208,8 +208,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                 child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
                   stream: _stopsStream(),
                   builder: (context, stopsSnapshot) {
-                    final List<Marker> stopMarkers = [];
-
                     String currentStopName = '___';
                     String nextStopName = '--';
                     String etaText = '--';
@@ -217,35 +215,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
 
                     if (stopsSnapshot.hasData) {
                       final stopsDocs = stopsSnapshot.data!.docs;
-
-                      for (final doc in stopsDocs) {
-                        final data = doc.data();
-
-                        final dynamic latRaw = data['latitude'];
-                        final dynamic lngRaw = data['longitude'];
-
-                        if (latRaw is! num || lngRaw is! num) {
-                          continue;
-                        }
-
-                        final LatLng stopPoint = LatLng(
-                          latRaw.toDouble(),
-                          lngRaw.toDouble(),
-                        );
-
-                        stopMarkers.add(
-                          Marker(
-                            point: stopPoint,
-                            width: 20,
-                            height: 20,
-                            child: const Icon(
-                              Icons.trip_origin,
-                              size: 18,
-                              color: Colors.blue,
-                            ),
-                          ),
-                        );
-                      }
 
                       if (hasActiveSession && busPosition != null) {
                         final result = _findCurrentNextEtaAndDistance(
@@ -274,9 +243,6 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
                                   'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
                               userAgentPackageName: 'com.example.unibus',
                             ),
-
-                            // المواقف فقط
-                            MarkerLayer(markers: stopMarkers),
 
                             // الباص النشط فقط
                             MarkerLayer(
