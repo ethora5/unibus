@@ -12,7 +12,7 @@ A real-time bus tracking mobile application built using Flutter and Firebase.
 ## Technologies
 - Flutter (Dart)
 - Firebase (Auth + Firestore)
-- Google Maps / OpenStreetMap
+- OpenStreetMap
 
 ## About
 This project was developed as a Final Year Project (FYP) at UNITEN.
