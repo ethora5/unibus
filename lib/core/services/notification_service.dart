@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'dart:convert';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
@@ -28,11 +27,6 @@ class NotificationService {
   static final FirebaseMessaging _messaging = FirebaseMessaging.instance;
   static final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
-  static StreamSubscription<QuerySnapshot<Map<String, dynamic>>>?
-  _newBusTrackingSubscription;
-
-  static final DateTime _appStartTime = DateTime.now();
-
   static const AndroidNotificationChannel _channel = AndroidNotificationChannel(
     'unibus_channel',
     'UniBus Notifications',
@@ -42,6 +36,13 @@ class NotificationService {
 
   static Future<void> initialize() async {
     await _messaging.requestPermission(alert: true, badge: true, sound: true);
+
+    await FirebaseMessaging.instance
+        .setForegroundNotificationPresentationOptions(
+          alert: true,
+          badge: true,
+          sound: true,
+        );
 
     const androidSettings = AndroidInitializationSettings(
       '@mipmap/ic_launcher',
@@ -82,8 +83,16 @@ class NotificationService {
       );
     });
 
+    FirebaseMessaging.onMessageOpenedApp.listen((RemoteMessage message) {
+      debugPrint('Notification opened from background: ${message.data}');
+    });
+
+    final initialMessage = await _messaging.getInitialMessage();
+    if (initialMessage != null) {
+      debugPrint('App opened from terminated state: ${initialMessage.data}');
+    }
+
     await saveTokenToFirestore();
-    await _listenForNewBusTrackingEvents();
 
     _messaging.onTokenRefresh.listen((token) async {
       await _saveToken(token);
@@ -121,58 +130,6 @@ class NotificationService {
         }, SetOptions(merge: true));
   }
 
-  static Future<void> _listenForNewBusTrackingEvents() async {
-    final localStudentId = await LocalStudentIdService.getOrCreateId();
-
-    await _newBusTrackingSubscription?.cancel();
-
-    _newBusTrackingSubscription = _firestore
-        .collection('notification_events')
-        .where('type', isEqualTo: 'new_bus_tracking')
-        .snapshots()
-        .listen((snapshot) async {
-          for (final change in snapshot.docChanges) {
-            if (change.type != DocumentChangeType.added) continue;
-
-            final eventData = change.doc.data();
-            if (eventData == null) continue;
-
-            final createdAt = eventData['createdAt'];
-            if (createdAt is Timestamp) {
-              final createdAtDate = createdAt.toDate();
-              if (createdAtDate.isBefore(_appStartTime)) {
-                continue;
-              }
-            }
-
-            final settingsDoc = await _firestore
-                .collection('user_notification_settings')
-                .doc(localStudentId)
-                .get();
-
-            final settings = settingsDoc.data();
-            final enabled = settings?['newBusTrackingAlert'] ?? true;
-
-            if (!enabled) continue;
-
-            final busName = eventData['busName']?.toString() ?? 'Unknown Bus';
-            final routeName =
-                eventData['routeName']?.toString() ?? 'Unknown Route';
-
-            await showLocalNotification(
-              title: 'New Bus Started Tracking',
-              body: '$busName has started tracking on $routeName',
-              payload: jsonEncode({
-                'type': 'new_bus_tracking',
-                'sessionId': eventData['sessionId'],
-                'busName': busName,
-                'routeName': routeName,
-              }),
-            );
-          }
-        });
-  }
-
   static Future<void> showLocalNotification({
     required String title,
     required String body,
@@ -194,9 +151,5 @@ class NotificationService {
       ),
       payload: payload,
     );
-  }
-
-  static Future<void> dispose() async {
-    await _newBusTrackingSubscription?.cancel();
   }
 }
