@@ -6,15 +6,6 @@ import '../../../app/app_routes.dart';
 import '../../../app/app_theme.dart';
 import 'driver_schedule_screen.dart';
 
-// هذه شاشة لوحة تحكم السائق
-// الهدف منها:
-// 1) جلب اسم السائق تلقائيًا من قاعدة البيانات بعد تسجيل الدخول
-// 2) عرض المسار الثابت وإتاحة فتح صورة الجدول
-// 3) جلب الحافلات مباشرة من Firestore
-// 4) عرض الحافلات المتاحة والمستخدمة فقط
-// 5) السماح باختيار الحافلات المتاحة فقط
-// 6) تفعيل زر البدء فقط عند اكتمال البيانات
-// 7) عند البدء يتم الانتقال لصفحة التتبع مع تمرير بيانات السائق والحافلة والمسار
 class DriverDashboardScreen extends StatefulWidget {
   const DriverDashboardScreen({super.key});
 
@@ -23,29 +14,19 @@ class DriverDashboardScreen extends StatefulWidget {
 }
 
 class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
-  // متحكم حقل النص الخاص باسم السائق
   final TextEditingController nameController = TextEditingController();
 
-  // هذا يخزن اسم الحافلة التي اختارها السائق
   String? selectedBus;
-
-  // هذا يخزن document id الخاص بالحافلة مثل bus_A
   String? selectedBusDocId;
 
-  // اسم المسار ثابت ومحدد مسبقًا
   static const String routeName = 'UNITEN Internal Shuttle Bus';
 
-  // حالة التحميل أثناء جلب بيانات السائق
   bool isLoadingDriver = true;
-
-  // رسالة خطأ إن وجدت
   String? driverError;
 
   @override
   void initState() {
     super.initState();
-
-    // نجلب بيانات السائق الحالي بمجرد فتح الصفحة
     _loadCurrentDriverData();
   }
 
@@ -55,7 +36,41 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     super.dispose();
   }
 
-  // هذه الدالة تجلب بيانات السائق الحالي من Firestore بناءً على الإيميل المسجل في Firebase Auth
+  Future<void> _showLogoutDialog(BuildContext context) async {
+    final bool? shouldLogout = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) {
+        return AlertDialog(
+          title: const Text('Logout'),
+          content: const Text('Are you sure you want to log out?'),
+          actions: [
+            TextButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, false);
+              },
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                Navigator.pop(dialogContext, true);
+              },
+              child: const Text('Confirm'),
+            ),
+          ],
+        );
+      },
+    );
+
+    if (shouldLogout == true && context.mounted) {
+      await FirebaseAuth.instance.signOut();
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        AppRoutes.roleSelection,
+        (_) => false,
+      );
+    }
+  }
+
   Future<void> _loadCurrentDriverData() async {
     setState(() {
       isLoadingDriver = true;
@@ -101,13 +116,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     }
   }
 
-  // هذا شرط تفعيل زر البدء
   bool get canStart =>
       nameController.text.trim().isNotEmpty &&
       selectedBus != null &&
       selectedBusDocId != null;
 
-  // هذه الدالة تفتح صفحة جدول السائق داخل التطبيق
   void _openScheduleImage() {
     Navigator.push(
       context,
@@ -120,13 +133,10 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Driver Dashboard'),
+        automaticallyImplyLeading: false,
         leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pushNamedAndRemoveUntil(
-            context,
-            AppRoutes.roleSelection,
-            (_) => false,
-          ),
+          onPressed: () => _showLogoutDialog(context),
+          icon: const Icon(Icons.logout, color: Colors.white),
         ),
       ),
       body: SafeArea(
@@ -180,7 +190,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
             const SizedBox(height: 8),
 
-            // إذا كانت بيانات السائق تحت التحميل نظهر مؤشر تحميل
             if (isLoadingDriver)
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -207,7 +216,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                   ],
                 ),
               )
-            // إذا صار خطأ نظهر رسالة
             else if (driverError != null)
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -228,7 +236,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                   ),
                 ),
               )
-            // إذا كل شيء تمام نظهر الاسم داخل الحقل
             else
               TextField(
                 controller: nameController,
@@ -354,7 +361,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
                 final allDocs = snapshot.data!.docs;
 
-                // نعرض فقط available و in_use
                 final filteredDocs = allDocs.where((doc) {
                   final data = doc.data();
                   final status =
@@ -456,7 +462,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
   }
 }
 
-// هذا نموذج بيانات بسيط يمثل الحافلة
 class _BusItem {
   final String docId;
   final String id;
@@ -465,7 +470,6 @@ class _BusItem {
   const _BusItem({required this.docId, required this.id, required this.status});
 }
 
-// هذا عنصر واجهة يمثل بطاقة اختيار حافلة واحدة
 class _BusTile extends StatelessWidget {
   final _BusItem bus;
   final bool selected;

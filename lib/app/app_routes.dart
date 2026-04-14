@@ -15,7 +15,9 @@ import '../features/driver/tracking_session_end_screen.dart';
 
 // Admin
 import '../features/admin/admin_login_screen.dart';
+import '../features/admin/admin_dashboard_screen.dart';
 import '../features/admin/feedback_center_screen.dart';
+import '../features/admin/driver_performance_screen.dart';
 
 class AppRoutes {
   static const String roleSelection = '/role-selection';
@@ -34,6 +36,7 @@ class AppRoutes {
 
   // Admin
   static const String adminLogin = '/admin-login';
+  static const String adminDashboard = '/admin-dashboard';
   static const String feedbackCenter = '/feedback-center';
   static const String driverPerformance = '/driver-performance';
 
@@ -53,6 +56,8 @@ class AppRoutes {
 
     // Admin
     adminLogin: (_) => const AdminLoginScreen(),
+    adminDashboard: (_) => const AdminDashboardScreen(),
     feedbackCenter: (_) => const FeedbackCenterScreen(),
+    driverPerformance: (_) => const DriverPerformanceScreen(),
   };
 }

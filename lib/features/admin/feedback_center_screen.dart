@@ -1,12 +1,7 @@
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import '../../../app/app_routes.dart';
-import '../../../app/app_theme.dart';
+import '../../app/app_theme.dart';
 
-// هذه شاشة مركز الشكاوى والملاحظات للأدمن
-// الهدف منها:
-// 1) عرض قسم فلاتر قابل للفتح والإغلاق
-// 2) السماح بتصفية النتائج حسب التاريخ والحافلة والسائق
-// 3) (حالياً) تجهيز واجهة الفلاتر فقط بدون قائمة نتائج
 class FeedbackCenterScreen extends StatefulWidget {
   const FeedbackCenterScreen({super.key});
 
@@ -15,92 +10,91 @@ class FeedbackCenterScreen extends StatefulWidget {
 }
 
 class _FeedbackCenterScreenState extends State<FeedbackCenterScreen> {
-  // هذا المتغير يتحكم في إظهار أو إخفاء قسم الفلاتر
   bool filtersExpanded = false;
-
-  // هذا يخزن التاريخ الذي اختاره المستخدم كفلتر
   DateTime? selectedDate;
+  String? selectedType;
 
-  // هذا يخزن الحافلة المختارة كفلتر
-  String? selectedBus;
-
-  // هذا يخزن اسم السائق المختار كفلتر
-  String? selectedDriver;
-
-  // قائمة الحافلات المتاحة للاختيار في الفلتر
-  final List<String> buses = const [
-    'Bus A',
-    'Bus B',
-    'Bus C',
-    'Bus D',
-    'Bus E',
+  final List<String> feedbackTypes = const [
+    'Bus Delay',
+    'Driver Behavior',
+    'Crowded Bus',
+    'Bus Condition',
+    'Other',
   ];
 
-  // قائمة السائقين المتاحة للاختيار في الفلتر (بيانات تجريبية)
-  final List<String> drivers = const ['Driver 1', 'Driver 2', 'Driver 3'];
-
-  // هذه الدالة تفتح نافذة اختيار التاريخ
-  // وبعد الاختيار نحفظ التاريخ في المتغير ونحدث الواجهة
   Future<void> _pickDate() async {
     final picked = await showDatePicker(
       context: context,
-
-      // إذا المستخدم سبق واختار تاريخ نبدأ منه، وإلا نبدأ بتاريخ اليوم
       initialDate: selectedDate ?? DateTime.now(),
-
-      // أقل تاريخ مسموح اختياره
       firstDate: DateTime(2024),
-
-      // أعلى تاريخ مسموح اختياره
-      lastDate: DateTime(2030),
+      lastDate: DateTime(2035),
     );
 
-    // إذا المستخدم اختار تاريخ فعلاً (ولم يغلق النافذة بدون اختيار)
-    // نخزن التاريخ ونحدث الواجهة
     if (picked != null) {
-      setState(() => selectedDate = picked);
+      setState(() {
+        selectedDate = picked;
+      });
     }
   }
 
-  // هذا يحول التاريخ المختار إلى نص جاهز للعرض داخل الواجهة
-  // إذا لا يوجد تاريخ مختار نعرض نص افتراضي
   String get formattedDate {
     if (selectedDate == null) return 'Select Date';
-
-    // تنسيق التاريخ بصيغة سنة-شهر-يوم مع ضمان رقمين للشهر واليوم
     return "${selectedDate!.year}-${selectedDate!.month.toString().padLeft(2, '0')}-${selectedDate!.day.toString().padLeft(2, '0')}";
+  }
+
+  bool _isSameDay(DateTime a, DateTime b) {
+    return a.year == b.year && a.month == b.month && a.day == b.day;
+  }
+
+  String _formatTimestamp(Timestamp? ts) {
+    if (ts == null) return '--';
+    final d = ts.toDate();
+    return "${d.day}/${d.month}/${d.year}  ${d.hour.toString().padLeft(2, '0')}:${d.minute.toString().padLeft(2, '0')}";
+  }
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _applyFilters(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+  ) {
+    return docs.where((doc) {
+      final data = doc.data();
+
+      final String type = (data['type'] ?? '').toString();
+
+      final Timestamp? createdAtTs = data['createdAt'] as Timestamp?;
+      final DateTime? createdAt = createdAtTs?.toDate();
+
+      final bool matchesDate =
+          selectedDate == null ||
+          (createdAt != null && _isSameDay(createdAt, selectedDate!));
+
+      final bool matchesType = selectedType == null || selectedType == type;
+
+      return matchesDate && matchesType;
+    }).toList();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        // عنوان الصفحة
         title: const Text('Feedback & Complaints Center'),
-
-        // زر رجوع يرجع لصفحة اختيار الدور ويمنع الرجوع للخلف مرة ثانية
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.pushNamedAndRemoveUntil(
-            context,
-            AppRoutes.roleSelection,
-            (_) => false,
-          ),
+          onPressed: () {
+            Navigator.pop(context);
+          },
         ),
       ),
-
-      // حماية المحتوى من شريط الحالة
       body: SafeArea(
-        // استخدام قائمة قابلة للتمرير حتى لو كبرت عناصر الفلاتر
         child: ListView(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 16),
+          padding: const EdgeInsets.all(16),
           children: [
-            const SizedBox(height: 12),
-
-            // هذا هو رأس قسم الفلاتر
-            // عند الضغط يفتح أو يقفل الفلاتر
             InkWell(
-              onTap: () => setState(() => filtersExpanded = !filtersExpanded),
+              onTap: () {
+                setState(() {
+                  filtersExpanded = !filtersExpanded;
+                });
+              },
               borderRadius: BorderRadius.circular(12),
               child: Container(
                 padding: const EdgeInsets.symmetric(
@@ -114,10 +108,6 @@ class _FeedbackCenterScreenState extends State<FeedbackCenterScreen> {
                 ),
                 child: Row(
                   children: [
-                    const Icon(Icons.tune, size: 18, color: Colors.black54),
-                    const SizedBox(width: 10),
-
-                    // عنوان "Filters" يأخذ المساحة المتبقية
                     const Expanded(
                       child: Text(
                         'Filters',
@@ -127,8 +117,6 @@ class _FeedbackCenterScreenState extends State<FeedbackCenterScreen> {
                         ),
                       ),
                     ),
-
-                    // أيقونة تتغير حسب حالة الفتح أو الإغلاق
                     Icon(
                       filtersExpanded ? Icons.expand_less : Icons.expand_more,
                       color: Colors.black54,
@@ -138,12 +126,9 @@ class _FeedbackCenterScreenState extends State<FeedbackCenterScreen> {
               ),
             ),
 
-            // إذا الفلاتر مفتوحة نعرض عناصر الفلاتر الثلاثة تحت الرأس
             if (filtersExpanded) ...[
               const SizedBox(height: 12),
 
-              // عنصر اختيار التاريخ
-              // نستخدم عنصر يلتقط اللمس لفتح نافذة اختيار التاريخ
               GestureDetector(
                 onTap: _pickDate,
                 child: Container(
@@ -156,64 +141,18 @@ class _FeedbackCenterScreenState extends State<FeedbackCenterScreen> {
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: AppTheme.cardBorder),
                   ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.calendar_today, size: 16),
-                      const SizedBox(width: 10),
-
-                      // عرض التاريخ المختار أو النص الافتراضي
-                      Text(
-                        formattedDate,
-                        style: const TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-
-              const SizedBox(height: 12),
-
-              // قائمة اختيار الحافلة
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.cardBorder),
-                ),
-
-                // هذا يخفي الخط السفلي الافتراضي للقائمة المنسدلة
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    // القيمة الحالية المختارة
-                    value: selectedBus,
-
-                    // نص افتراضي يظهر إذا لم يتم اختيار حافلة
-                    hint: const Text(
-                      'Select Bus',
-                      style: TextStyle(fontSize: 12),
+                  child: Text(
+                    formattedDate,
+                    style: const TextStyle(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
                     ),
-
-                    // يجعل القائمة تتمدد بعرض الحاوية
-                    isExpanded: true,
-
-                    // تحويل قائمة الحافلات إلى عناصر قابلة للاختيار
-                    items: buses
-                        .map((b) => DropdownMenuItem(value: b, child: Text(b)))
-                        .toList(),
-
-                    // عند تغيير الاختيار نخزن القيمة ونحدث الواجهة
-                    onChanged: (v) => setState(() => selectedBus = v),
                   ),
                 ),
               ),
 
               const SizedBox(height: 12),
 
-              // قائمة اختيار السائق
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 12),
                 decoration: BoxDecoration(
@@ -223,22 +162,196 @@ class _FeedbackCenterScreenState extends State<FeedbackCenterScreen> {
                 ),
                 child: DropdownButtonHideUnderline(
                   child: DropdownButton<String>(
-                    value: selectedDriver,
+                    value: selectedType,
                     hint: const Text(
-                      'Select Driver',
+                      'Select Type',
                       style: TextStyle(fontSize: 12),
                     ),
                     isExpanded: true,
-                    items: drivers
-                        .map((d) => DropdownMenuItem(value: d, child: Text(d)))
+                    items: feedbackTypes
+                        .map(
+                          (type) => DropdownMenuItem<String>(
+                            value: type,
+                            child: Text(type),
+                          ),
+                        )
                         .toList(),
-                    onChanged: (v) => setState(() => selectedDriver = v),
+                    onChanged: (value) {
+                      setState(() {
+                        selectedType = value;
+                      });
+                    },
                   ),
+                ),
+              ),
+
+              const SizedBox(height: 8),
+
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  onPressed: () {
+                    setState(() {
+                      selectedDate = null;
+                      selectedType = null;
+                    });
+                  },
+                  child: const Text('Clear Filters'),
                 ),
               ),
             ],
+
+            const SizedBox(height: 14),
+
+            StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+              stream: FirebaseFirestore.instance
+                  .collection('feedbacks')
+                  .orderBy('createdAt', descending: true)
+                  .snapshots(),
+              builder: (context, snapshot) {
+                if (snapshot.hasError) {
+                  return const _EmptyState(
+                    title: 'Unable to load feedback',
+                    subtitle: 'Please check your Firestore data or indexes.',
+                  );
+                }
+
+                if (snapshot.connectionState == ConnectionState.waiting) {
+                  return const Center(
+                    child: Padding(
+                      padding: EdgeInsets.all(24),
+                      child: CircularProgressIndicator(),
+                    ),
+                  );
+                }
+
+                final docs = snapshot.data?.docs ?? [];
+                final filteredDocs = _applyFilters(docs);
+
+                if (filteredDocs.isEmpty) {
+                  return const _EmptyState(
+                    title: 'No feedback found',
+                    subtitle:
+                        'There are no entries matching the selected filters.',
+                  );
+                }
+
+                return Column(
+                  children: filteredDocs.map((doc) {
+                    final data = doc.data();
+
+                    final String type = (data['type'] ?? 'General').toString();
+                    final String message = (data['message'] ?? '').toString();
+                    final String studentId = (data['studentId'] ?? '--')
+                        .toString();
+                    final String busSessionId = (data['busSessionId'] ?? '--')
+                        .toString();
+
+                    final Timestamp? createdAt =
+                        data['createdAt'] as Timestamp?;
+
+                    return Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(14),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(color: AppTheme.cardBorder),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            type,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w800,
+                            ),
+                          ),
+                          const SizedBox(height: 8),
+                          Text(
+                            message.isEmpty ? 'No message provided' : message,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          const SizedBox(height: 10),
+                          _InfoRow(label: 'Student ID', value: studentId),
+                          _InfoRow(
+                            label: 'Bus Session ID',
+                            value: busSessionId == 'null' ? '--' : busSessionId,
+                          ),
+                          _InfoRow(
+                            label: 'Created At',
+                            value: _formatTimestamp(createdAt),
+                          ),
+                        ],
+                      ),
+                    );
+                  }).toList(),
+                );
+              },
+            ),
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _InfoRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _InfoRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 6),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 95,
+            child: Text(
+              '$label:',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
+            ),
+          ),
+          Expanded(child: Text(value, style: const TextStyle(fontSize: 12))),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyState extends StatelessWidget {
+  final String title;
+  final String subtitle;
+
+  const _EmptyState({required this.title, required this.subtitle});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(24),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppTheme.cardBorder),
+      ),
+      child: Column(
+        children: [
+          Text(
+            title,
+            style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            subtitle,
+            textAlign: TextAlign.center,
+            style: const TextStyle(fontSize: 12, color: Colors.black54),
+          ),
+        ],
       ),
     );
   }
