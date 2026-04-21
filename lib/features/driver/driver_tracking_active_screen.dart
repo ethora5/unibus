@@ -1,21 +1,17 @@
 import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:latlong2/latlong.dart';
 
-import '../../../app/app_routes.dart';
-import '../../../app/app_theme.dart';
-import '../../../core/services/notification_event_service.dart';
+import '../../app/app_routes.dart';
+import '../../app/app_theme.dart';
+import '../../core/services/driver_active_session_service.dart';
+import '../../core/services/notification_event_service.dart';
 
-// هذه شاشة التتبع النشط للسائق
-// الهدف منها:
-// 1) إظهار أن التتبع شغال
-// 2) عرض تفاصيل الجلسة الفعلية القادمة من الشاشة السابقة
-// 3) إنشاء session فعلية وتغيير حالة الباص إلى in_use
-// 4) بدء GPS updates الفعلية كل 5 ثواني وتخزين الموقع في Firestore
-// 5) منع الخروج من الصفحة إلا عند الضغط على Stop Tracking
-// 6) عند الإيقاف يتم إنهاء الجلسة وإرجاع الباص إلى available
-// 7) عند بدء الجلسة يتم إنشاء notification event لإشعار الطلاب أن باص جديد بدأ التتبع
 class DriverTrackingActiveScreen extends StatefulWidget {
   const DriverTrackingActiveScreen({super.key});
 
@@ -26,54 +22,63 @@ class DriverTrackingActiveScreen extends StatefulWidget {
 
 class _DriverTrackingActiveScreenState
     extends State<DriverTrackingActiveScreen> {
-  // مؤقت لتحديث الوقت المنقضي كل ثانية
   Timer? timer;
-
-  // مؤقت GPS كل 5 ثواني
   Timer? _gpsTimer;
 
-  // عداد الثواني
   int seconds = 0;
+  int startSeconds = 0;
 
-  // بيانات الجلسة القادمة من الشاشة السابقة
   String driverName = 'Driver';
   String busId = 'Bus';
   String routeName = 'Route';
+  String? routeId;
   String? busDocId;
 
-  // حتى لا نعيد قراءة arguments أكثر من مرة
   bool _argsLoaded = false;
-
-  // حتى لا نعيد بدء الجلسة أكثر من مرة
   bool _sessionStarted = false;
+  bool _resumeSession = false;
 
-  // id الخاص بالجلسة الحالية في Firestore
   String? sessionDocId;
 
-  // حالة بدء الجلسة / إيقافها
   bool isStartingSession = true;
   bool isStoppingSession = false;
 
-  // رسالة خطأ إن وجدت
   String? sessionError;
-
-  // آخر موقع فعلي
   Position? currentPosition;
-
-  // حالة الجي بي اس
   bool gpsReady = false;
+
+  List<LatLng> _routePoints = [];
+  List<double> _cumulativeRouteMeters = [];
+
+  LatLng? _lastAcceptedPoint;
+  double? _lastAcceptedProgressMeters;
+
+  bool _isProcessingLocation = false;
+
+  static const double _maxAccuracyMeters = 80.0;
+  static const double _snapThresholdMeters = 35.0;
+  static const double _maxBackwardJumpMeters = 12.0;
+  static const double _minMeaningfulMovementMeters = 0.5;
+
+  static const double _forwardSearchWindowMeters = 180.0;
+  static const double _backwardSearchWindowMeters = 25.0;
+
+  static const Duration _gpsUpdateInterval = Duration(seconds: 2);
 
   @override
   void initState() {
     super.initState();
 
-    // تشغيل المؤقت كل ثانية
     timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
 
-      // نعد الوقت فقط إذا الجلسة بدأت فعلاً وما زلنا لا نوقفها
       if (_sessionStarted && !isStoppingSession) {
-        setState(() => seconds++);
+        final int nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+        setState(() {
+          seconds = nowSeconds - startSeconds;
+          if (seconds < 0) seconds = 0;
+        });
       }
     });
   }
@@ -100,13 +105,23 @@ class _DriverTrackingActiveScreenState
           ? (args['routeName'] as String).trim()
           : 'Route';
 
+      routeId = (args['routeId'] as String?)?.trim();
+
       busDocId = args['busDocId'] as String?;
+      sessionDocId = args['sessionDocId'] as String?;
+      _resumeSession = (args['resumeSession'] as bool?) ?? false;
+      startSeconds =
+          (args['startSeconds'] as int?) ??
+          (DateTime.now().millisecondsSinceEpoch ~/ 1000);
     }
 
     _argsLoaded = true;
 
-    // بدء الجلسة الفعلية بعد استلام البيانات
-    _startTrackingSession();
+    if (_resumeSession && sessionDocId != null) {
+      _resumeExistingSession();
+    } else {
+      _startTrackingSession();
+    }
   }
 
   @override
@@ -116,7 +131,6 @@ class _DriverTrackingActiveScreenState
     super.dispose();
   }
 
-  // تحويل عدد الثواني إلى HH:MM:SS
   String get elapsed {
     final int hours = seconds ~/ 3600;
     final int minutes = (seconds % 3600) ~/ 60;
@@ -129,7 +143,55 @@ class _DriverTrackingActiveScreenState
     return '$hh:$mm:$ss';
   }
 
-  // التحقق من خدمات الموقع والصلاحيات
+  Future<void> _resumeExistingSession() async {
+    try {
+      if (sessionDocId == null || sessionDocId!.trim().isEmpty) {
+        throw Exception('Session ID is missing.');
+      }
+
+      final doc = await FirebaseFirestore.instance
+          .collection('driving_sessions')
+          .doc(sessionDocId)
+          .get();
+
+      if (!doc.exists) {
+        throw Exception('Session not found.');
+      }
+
+      final data = doc.data()!;
+      final status = (data['status'] as String?)?.trim().toLowerCase() ?? '';
+
+      if (status != 'active') {
+        throw Exception('This session is no longer active.');
+      }
+
+      final dynamic savedProgress = data['routeProgressMeters'];
+      if (savedProgress is num) {
+        _lastAcceptedProgressMeters = savedProgress.toDouble();
+      }
+
+      final dynamic lat = data['currentLatitude'];
+      final dynamic lng = data['currentLongitude'];
+      if (lat is num && lng is num) {
+        _lastAcceptedPoint = LatLng(lat.toDouble(), lng.toDouble());
+      }
+
+      setState(() {
+        _sessionStarted = true;
+        isStartingSession = false;
+        sessionError = null;
+      });
+
+      await _startGpsUpdates();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        isStartingSession = false;
+        sessionError = e.toString().replaceFirst('Exception: ', '');
+      });
+    }
+  }
+
   Future<bool> _checkAndRequestLocationPermission() async {
     final bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
@@ -163,95 +225,260 @@ class _DriverTrackingActiveScreenState
     return true;
   }
 
-  // بدء تحديثات GPS كل 5 ثواني
+  Future<void> _loadRoutePoints() async {
+    try {
+      Query<Map<String, dynamic>> query = FirebaseFirestore.instance.collection(
+        'route_points',
+      );
+
+      // إذا عندك routeId بنجرب نفلتر
+      if (routeId != null && routeId!.isNotEmpty) {
+        final filtered = await query
+            .where('routeId', isEqualTo: routeId)
+            .orderBy('order')
+            .get();
+
+        if (filtered.docs.isNotEmpty) {
+          _routePoints = filtered.docs
+              .map((doc) {
+                final data = doc.data();
+                final latRaw = data['latitude'];
+                final lngRaw = data['longitude'];
+
+                if (latRaw is num && lngRaw is num) {
+                  return LatLng(latRaw.toDouble(), lngRaw.toDouble());
+                }
+                return null;
+              })
+              .whereType<LatLng>()
+              .toList();
+
+          _rebuildRouteCumulativeDistances();
+          return;
+        }
+      }
+
+      // fallback: لو routeId مو موجود داخل route_points
+      final snapshot = await FirebaseFirestore.instance
+          .collection('route_points')
+          .orderBy('order')
+          .get();
+
+      _routePoints = snapshot.docs
+          .map((doc) {
+            final data = doc.data();
+            final latRaw = data['latitude'];
+            final lngRaw = data['longitude'];
+
+            if (latRaw is num && lngRaw is num) {
+              return LatLng(latRaw.toDouble(), lngRaw.toDouble());
+            }
+            return null;
+          })
+          .whereType<LatLng>()
+          .toList();
+
+      _rebuildRouteCumulativeDistances();
+    } catch (_) {
+      _routePoints = [];
+      _cumulativeRouteMeters = [];
+    }
+  }
+
+  void _rebuildRouteCumulativeDistances() {
+    _cumulativeRouteMeters = [];
+
+    if (_routePoints.isEmpty) return;
+
+    double total = 0.0;
+    _cumulativeRouteMeters.add(0.0);
+
+    for (int i = 1; i < _routePoints.length; i++) {
+      total += _distanceMeters(_routePoints[i - 1], _routePoints[i]);
+      _cumulativeRouteMeters.add(total);
+    }
+  }
+
   Future<void> _startGpsUpdates() async {
     final bool allowed = await _checkAndRequestLocationPermission();
     if (!allowed) return;
 
+    await _loadRoutePoints();
     await _stopGpsUpdates();
 
-    // أول قراءة مباشرة
     try {
+      // أول نقطة مباشرة من أول ما تبدأ الجلسة
       final Position firstPosition = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+          accuracy: LocationAccuracy.bestForNavigation,
         ),
       );
 
-      final bool saved = await _updateLiveLocation(firstPosition);
+      await _handlePosition(firstPosition);
 
-      if (!mounted) return;
+      _gpsTimer = Timer.periodic(_gpsUpdateInterval, (_) async {
+        if (_isProcessingLocation) return;
 
-      if (saved) {
-        setState(() {
-          currentPosition = firstPosition;
-          gpsReady = true;
-          sessionError = null;
-        });
-      }
-    } catch (e) {
+        try {
+          final Position position = await Geolocator.getCurrentPosition(
+            locationSettings: const LocationSettings(
+              accuracy: LocationAccuracy.bestForNavigation,
+            ),
+          );
+
+          await _handlePosition(position);
+        } catch (_) {
+          if (!mounted) return;
+          setState(() {
+            gpsReady = false;
+            sessionError = 'Failed to update GPS location.';
+          });
+        }
+      });
+    } catch (_) {
       if (!mounted) return;
       setState(() {
         gpsReady = false;
         sessionError = 'Failed to get current location.';
       });
     }
-
-    // بعدها يحدث كل 5 ثواني
-    _gpsTimer = Timer.periodic(const Duration(seconds: 5), (_) async {
-      try {
-        final Position position = await Geolocator.getCurrentPosition(
-          locationSettings: const LocationSettings(
-            accuracy: LocationAccuracy.high,
-          ),
-        );
-
-        final bool saved = await _updateLiveLocation(position);
-
-        if (!mounted) return;
-
-        if (saved) {
-          setState(() {
-            currentPosition = position;
-            gpsReady = true;
-            sessionError = null;
-          });
-        }
-      } catch (e) {
-        if (!mounted) return;
-        setState(() {
-          gpsReady = false;
-          sessionError = 'Failed to update GPS location.';
-        });
-      }
-    });
   }
 
-  // تحديث الموقع داخل Firestore
-  Future<bool> _updateLiveLocation(Position position) async {
+  Future<void> _handlePosition(Position position) async {
+    if (_isProcessingLocation) return;
+
+    _isProcessingLocation = true;
+    try {
+      final bool saved = await _updateLiveLocation(position);
+
+      if (!mounted) return;
+
+      if (saved) {
+        setState(() {
+          gpsReady = true;
+          sessionError = null;
+        });
+      }
+    } finally {
+      _isProcessingLocation = false;
+    }
+  }
+
+  Future<bool> _updateLiveLocation(Position rawPosition) async {
     if (busDocId == null || busDocId!.trim().isEmpty) return false;
     if (sessionDocId == null || sessionDocId!.trim().isEmpty) return false;
 
     final FirebaseFirestore firestore = FirebaseFirestore.instance;
     final Timestamp now = Timestamp.now();
 
+    final LatLng rawLatLng = LatLng(
+      rawPosition.latitude,
+      rawPosition.longitude,
+    );
+
+    double moveDistance = double.infinity;
+    if (_lastAcceptedPoint != null) {
+      moveDistance = _distanceMeters(_lastAcceptedPoint!, rawLatLng);
+    }
+
+    final bool veryPoorAccuracy = rawPosition.accuracy > _maxAccuracyMeters;
+    final bool almostNoMovement = moveDistance < _minMeaningfulMovementMeters;
+    final bool almostStopped = rawPosition.speed <= 0.2;
+
+    if (veryPoorAccuracy && almostNoMovement && almostStopped) {
+      return false;
+    }
+
+    final _SnapResult snapResult = _matchPointToRoute(rawLatLng);
+
+    LatLng finalLatLng = rawLatLng;
+    double finalProgressMeters = _lastAcceptedProgressMeters ?? 0.0;
+    bool gpsCorrectionApplied = false;
+
+    if (snapResult.found &&
+        snapResult.deviationMeters <= _snapThresholdMeters &&
+        snapResult.progressMeters >=
+            ((_lastAcceptedProgressMeters ?? 0.0) - _maxBackwardJumpMeters)) {
+      finalLatLng = snapResult.snappedPoint!;
+      finalProgressMeters = snapResult.progressMeters;
+      gpsCorrectionApplied = true;
+    } else if (_lastAcceptedProgressMeters != null &&
+        _routePoints.length >= 2) {
+      finalProgressMeters = _lastAcceptedProgressMeters!;
+    } else if (_routePoints.length >= 2) {
+      finalProgressMeters = _fallbackNearestProgress(rawLatLng);
+    }
+
+    // لا نسمح للباص يرجع للخلف
+    if (_lastAcceptedProgressMeters != null &&
+        finalProgressMeters < _lastAcceptedProgressMeters!) {
+      finalProgressMeters = _lastAcceptedProgressMeters!;
+      if (_lastAcceptedPoint != null) {
+        finalLatLng = _lastAcceptedPoint!;
+      }
+    }
+
+    final Position correctedPosition = Position(
+      longitude: finalLatLng.longitude,
+      latitude: finalLatLng.latitude,
+      timestamp: rawPosition.timestamp,
+      accuracy: rawPosition.accuracy,
+      altitude: rawPosition.altitude,
+      altitudeAccuracy: rawPosition.altitudeAccuracy,
+      heading: rawPosition.heading,
+      headingAccuracy: rawPosition.headingAccuracy,
+      speed: rawPosition.speed,
+      speedAccuracy: rawPosition.speedAccuracy,
+    );
+
     try {
       await firestore.collection('driving_sessions').doc(sessionDocId).update({
-        'currentLatitude': position.latitude,
-        'currentLongitude': position.longitude,
-        'currentSpeed': position.speed,
+        'currentLatitude': correctedPosition.latitude,
+        'currentLongitude': correctedPosition.longitude,
+        'currentSpeed': correctedPosition.speed,
+        'currentAccuracy': correctedPosition.accuracy,
         'lastLocationUpdatedAt': now,
+        'rawLatitude': rawPosition.latitude,
+        'rawLongitude': rawPosition.longitude,
+        'snappedLatitude': correctedPosition.latitude,
+        'snappedLongitude': correctedPosition.longitude,
+        'distanceFromRouteMeters': snapResult.deviationMeters,
+        'gpsCorrectionApplied': gpsCorrectionApplied,
+        'routeProgressMeters': finalProgressMeters,
+        'routeProgressFraction': _routeLengthMeters <= 0
+            ? 0.0
+            : (finalProgressMeters / _routeLengthMeters).clamp(0.0, 1.0),
       });
 
       await firestore.collection('buses').doc(busDocId).update({
-        'currentLatitude': position.latitude,
-        'currentLongitude': position.longitude,
-        'currentSpeed': position.speed,
+        'currentLatitude': correctedPosition.latitude,
+        'currentLongitude': correctedPosition.longitude,
+        'currentSpeed': correctedPosition.speed,
+        'currentAccuracy': correctedPosition.accuracy,
         'gpsUpdatedAt': now,
+        'rawLatitude': rawPosition.latitude,
+        'rawLongitude': rawPosition.longitude,
+        'snappedLatitude': correctedPosition.latitude,
+        'snappedLongitude': correctedPosition.longitude,
+        'distanceFromRouteMeters': snapResult.deviationMeters,
+        'gpsCorrectionApplied': gpsCorrectionApplied,
+        'routeProgressMeters': finalProgressMeters,
+        'routeProgressFraction': _routeLengthMeters <= 0
+            ? 0.0
+            : (finalProgressMeters / _routeLengthMeters).clamp(0.0, 1.0),
+      });
+
+      _lastAcceptedPoint = finalLatLng;
+      _lastAcceptedProgressMeters = finalProgressMeters;
+
+      if (!mounted) return true;
+
+      setState(() {
+        currentPosition = correctedPosition;
       });
 
       return true;
-    } catch (e) {
+    } catch (_) {
       if (!mounted) return false;
       setState(() {
         gpsReady = false;
@@ -261,13 +488,11 @@ class _DriverTrackingActiveScreenState
     }
   }
 
-  // إيقاف gps
   Future<void> _stopGpsUpdates() async {
     _gpsTimer?.cancel();
     _gpsTimer = null;
   }
 
-  // بدء session فعلية وتحديث حالة الباص + إنشاء notification event
   Future<void> _startTrackingSession() async {
     if (_sessionStarted) return;
 
@@ -291,6 +516,10 @@ class _DriverTrackingActiveScreenState
           .doc();
 
       final Timestamp now = Timestamp.now();
+      final currentUser = FirebaseAuth.instance.currentUser;
+      final int nowSeconds = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+
+      startSeconds = nowSeconds;
 
       await firestore.runTransaction((transaction) async {
         final busSnapshot = await transaction.get(busRef);
@@ -307,29 +536,42 @@ class _DriverTrackingActiveScreenState
           throw Exception('This bus is no longer available.');
         }
 
-        // إنشاء session
         transaction.set(sessionRef, {
           'driverName': driverName,
+          'driverEmail': currentUser?.email,
           'busId': busId,
           'busDocId': busDocId,
           'routeName': routeName,
+          'routeId': routeId,
           'startTime': now,
           'endTime': null,
           'durationSeconds': 0,
           'status': 'active',
           'createdAt': now,
+          'routeProgressMeters': 0.0,
+          'routeProgressFraction': 0.0,
         });
 
-        // تحديث الباص إلى in_use
         transaction.update(busRef, {
           'status': 'in_use',
           'assignedDriverName': driverName,
           'currentSessionId': sessionRef.id,
           'updatedAt': now,
+          'routeName': routeName,
+          'routeId': routeId,
         });
       });
 
-      // إنشاء notification event بعد نجاح إنشاء الجلسة
+      await DriverActiveSessionService.saveActiveSession(
+        sessionId: sessionRef.id,
+        busDocId: busDocId!,
+        busId: busId,
+        routeName: routeName,
+        driverName: driverName,
+        driverEmail: currentUser?.email ?? '',
+        startSeconds: startSeconds,
+      );
+
       await NotificationEventService.createNewBusTrackingEvent(
         sessionId: sessionRef.id,
         busName: busId,
@@ -356,7 +598,6 @@ class _DriverTrackingActiveScreenState
     }
   }
 
-  // إيقاف session وإرجاع الباص available
   Future<void> _stopTracking() async {
     if (isStoppingSession) return;
 
@@ -406,7 +647,6 @@ class _DriverTrackingActiveScreenState
           throw Exception('Session not found.');
         }
 
-        // إنهاء الجلسة
         transaction.update(sessionRef, {
           'endTime': now,
           'durationSeconds': seconds,
@@ -414,7 +654,6 @@ class _DriverTrackingActiveScreenState
           'updatedAt': now,
         });
 
-        // إعادة الباص إلى available
         transaction.update(busRef, {
           'status': 'available',
           'assignedDriverName': null,
@@ -422,6 +661,8 @@ class _DriverTrackingActiveScreenState
           'updatedAt': now,
         });
       });
+
+      await DriverActiveSessionService.clearActiveSession();
 
       if (!mounted) return;
 
@@ -433,6 +674,7 @@ class _DriverTrackingActiveScreenState
           'busId': busId,
           'busDocId': busDocId,
           'routeName': routeName,
+          'routeId': routeId,
           'elapsedSeconds': seconds,
           'sessionDocId': sessionDocId,
         },
@@ -445,6 +687,173 @@ class _DriverTrackingActiveScreenState
         sessionError = e.toString().replaceFirst('Exception: ', '');
       });
     }
+  }
+
+  double get _routeLengthMeters {
+    if (_cumulativeRouteMeters.isEmpty) return 0.0;
+    return _cumulativeRouteMeters.last;
+  }
+
+  double _distanceMeters(LatLng a, LatLng b) {
+    const Distance distance = Distance();
+    return distance(a, b);
+  }
+
+  double _fallbackNearestProgress(LatLng point) {
+    if (_routePoints.length < 2) return 0.0;
+
+    double bestDistance = double.infinity;
+    double bestProgress = 0.0;
+
+    for (int i = 0; i < _routePoints.length - 1; i++) {
+      final _ProjectedPoint projected = _projectPointOnSegmentWithT(
+        point,
+        _routePoints[i],
+        _routePoints[i + 1],
+      );
+
+      final double d = _distanceMeters(point, projected.point);
+      if (d < bestDistance) {
+        bestDistance = d;
+
+        final double segmentLength = _distanceMeters(
+          _routePoints[i],
+          _routePoints[i + 1],
+        );
+
+        bestProgress =
+            _cumulativeRouteMeters[i] +
+            (segmentLength * projected.t.clamp(0.0, 1.0));
+      }
+    }
+
+    return bestProgress;
+  }
+
+  _SnapResult _matchPointToRoute(LatLng rawPoint) {
+    if (_routePoints.length < 2) {
+      return const _SnapResult.notFound();
+    }
+
+    int startSegment = 0;
+    int endSegment = _routePoints.length - 2;
+
+    if (_lastAcceptedProgressMeters != null) {
+      final double minMeters =
+          (_lastAcceptedProgressMeters! - _backwardSearchWindowMeters).clamp(
+            0.0,
+            _routeLengthMeters,
+          );
+      final double maxMeters =
+          (_lastAcceptedProgressMeters! + _forwardSearchWindowMeters).clamp(
+            0.0,
+            _routeLengthMeters,
+          );
+
+      startSegment = _segmentIndexForProgress(minMeters);
+      endSegment = _segmentIndexForProgress(maxMeters);
+
+      if (startSegment > endSegment) {
+        startSegment = 0;
+        endSegment = _routePoints.length - 2;
+      }
+    }
+
+    LatLng? bestPoint;
+    double bestDistance = double.infinity;
+    double bestProgress = 0.0;
+
+    for (int i = startSegment; i <= endSegment; i++) {
+      final LatLng a = _routePoints[i];
+      final LatLng b = _routePoints[i + 1];
+
+      final _ProjectedPoint projected = _projectPointOnSegmentWithT(
+        rawPoint,
+        a,
+        b,
+      );
+      final double distance = _distanceMeters(rawPoint, projected.point);
+
+      if (distance < bestDistance) {
+        bestDistance = distance;
+        bestPoint = projected.point;
+
+        final double segmentLength = _distanceMeters(a, b);
+        bestProgress =
+            _cumulativeRouteMeters[i] +
+            (segmentLength * projected.t.clamp(0.0, 1.0));
+      }
+    }
+
+    if (bestPoint == null) {
+      return const _SnapResult.notFound();
+    }
+
+    return _SnapResult(
+      found: true,
+      snappedPoint: bestPoint,
+      deviationMeters: bestDistance,
+      progressMeters: bestProgress,
+    );
+  }
+
+  int _segmentIndexForProgress(double progressMeters) {
+    if (_routePoints.length < 2) return 0;
+    if (_cumulativeRouteMeters.isEmpty) return 0;
+
+    for (int i = 0; i < _cumulativeRouteMeters.length - 1; i++) {
+      final double start = _cumulativeRouteMeters[i];
+      final double end = _cumulativeRouteMeters[i + 1];
+
+      if (progressMeters >= start && progressMeters <= end) {
+        return i;
+      }
+    }
+
+    return _routePoints.length - 2;
+  }
+
+  _ProjectedPoint _projectPointOnSegmentWithT(LatLng p, LatLng a, LatLng b) {
+    final _XY pxy = _toXY(p, p.latitude);
+    final _XY axy = _toXY(a, p.latitude);
+    final _XY bxy = _toXY(b, p.latitude);
+
+    final double abx = bxy.x - axy.x;
+    final double aby = bxy.y - axy.y;
+    final double apx = pxy.x - axy.x;
+    final double apy = pxy.y - axy.y;
+
+    final double abSquared = (abx * abx) + (aby * aby);
+    if (abSquared == 0) {
+      return _ProjectedPoint(a, 0.0);
+    }
+
+    double t = ((apx * abx) + (apy * aby)) / abSquared;
+    t = t.clamp(0.0, 1.0);
+
+    final double projX = axy.x + (abx * t);
+    final double projY = axy.y + (aby * t);
+
+    return _ProjectedPoint(_fromXY(_XY(projX, projY), p.latitude), t);
+  }
+
+  _XY _toXY(LatLng point, double referenceLat) {
+    const double metersPerDegreeLat = 111320.0;
+    final double metersPerDegreeLng =
+        111320.0 * math.cos(referenceLat * math.pi / 180.0);
+
+    return _XY(
+      point.longitude * metersPerDegreeLng,
+      point.latitude * metersPerDegreeLat,
+    );
+  }
+
+  LatLng _fromXY(_XY xy, double referenceLat) {
+    const double metersPerDegreeLat = 111320.0;
+    final double metersPerDegreeLng =
+        111320.0 * math.cos(referenceLat * math.pi / 180.0);
+
+    return LatLng(xy.y / metersPerDegreeLat, xy.x / metersPerDegreeLng);
   }
 
   @override
@@ -529,9 +938,7 @@ class _DriverTrackingActiveScreenState
                   ],
                 ),
               ),
-
               const SizedBox(height: 14),
-
               if (sessionError != null) ...[
                 Container(
                   padding: const EdgeInsets.symmetric(
@@ -554,7 +961,6 @@ class _DriverTrackingActiveScreenState
                 ),
                 const SizedBox(height: 12),
               ],
-
               _Card(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -578,9 +984,7 @@ class _DriverTrackingActiveScreenState
                   ],
                 ),
               ),
-
               const SizedBox(height: 12),
-
               _Card(
                 child: Column(
                   children: [
@@ -600,9 +1004,7 @@ class _DriverTrackingActiveScreenState
                   ],
                 ),
               ),
-
               const SizedBox(height: 12),
-
               _Card(
                 child: Row(
                   children: [
@@ -622,7 +1024,7 @@ class _DriverTrackingActiveScreenState
                       ),
                     ),
                     Text(
-                      gpsReady ? 'Every 5 sec' : 'Starting',
+                      gpsReady ? 'Every 2 sec' : 'Starting',
                       style: const TextStyle(
                         fontSize: 12,
                         fontWeight: FontWeight.w800,
@@ -632,9 +1034,7 @@ class _DriverTrackingActiveScreenState
                   ],
                 ),
               ),
-
               const SizedBox(height: 12),
-
               _Card(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -660,9 +1060,7 @@ class _DriverTrackingActiveScreenState
                   ],
                 ),
               ),
-
               const SizedBox(height: 16),
-
               SizedBox(
                 height: 50,
                 child: ElevatedButton.icon(
@@ -702,7 +1100,40 @@ class _DriverTrackingActiveScreenState
   }
 }
 
-// هذا عنصر بطاقة موحد لتقليل تكرار تصميم البطاقات
+class _XY {
+  final double x;
+  final double y;
+
+  const _XY(this.x, this.y);
+}
+
+class _ProjectedPoint {
+  final LatLng point;
+  final double t;
+
+  const _ProjectedPoint(this.point, this.t);
+}
+
+class _SnapResult {
+  final bool found;
+  final LatLng? snappedPoint;
+  final double deviationMeters;
+  final double progressMeters;
+
+  const _SnapResult({
+    required this.found,
+    required this.snappedPoint,
+    required this.deviationMeters,
+    required this.progressMeters,
+  });
+
+  const _SnapResult.notFound()
+    : found = false,
+      snappedPoint = null,
+      deviationMeters = double.infinity,
+      progressMeters = 0.0;
+}
+
 class _Card extends StatelessWidget {
   final Widget child;
 
@@ -729,7 +1160,6 @@ class _Card extends StatelessWidget {
   }
 }
 
-// هذا عنصر صف يعرض معلومة على اليسار وقيمتها على اليمين
 class _KeyValueRow extends StatelessWidget {
   final String left;
   final String right;

@@ -1,29 +1,37 @@
 import 'package:flutter/material.dart';
-import '../../../app/app_routes.dart';
+import '../../app/app_routes.dart';
 
-// هذه شاشة نهاية جلسة التتبع
-// الهدف منها إظهار رسالة نجاح بعد إيقاف التتبع
-// وتوفير زر يرجع المستخدم للوحة السائق
 class TrackingSessionEndScreen extends StatelessWidget {
   const TrackingSessionEndScreen({super.key});
 
+  String _formatDuration(int totalSeconds) {
+    final int hours = totalSeconds ~/ 3600;
+    final int minutes = (totalSeconds % 3600) ~/ 60;
+    final int secs = totalSeconds % 60;
+
+    final String hh = hours.toString().padLeft(2, '0');
+    final String mm = minutes.toString().padLeft(2, '0');
+    final String ss = secs.toString().padLeft(2, '0');
+
+    return '$hh:$mm:$ss';
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      // لا يوجد شريط علوي لأن التصميم يعتمد على رسالة في وسط الصفحة
-      body: SafeArea(
-        // حماية المحتوى من شريط الحالة
-        child: Center(
-          // توسيط المحتوى في منتصف الشاشة
-          child: Padding(
-            // مسافة داخلية من اليمين واليسار لتحسين شكل العناصر
-            padding: const EdgeInsets.symmetric(horizontal: 24),
+    final args =
+        ModalRoute.of(context)?.settings.arguments as Map<String, dynamic>?;
 
-            // ترتيب العناصر عموديًا في منتصف الشاشة
+    final int elapsedSeconds = (args?['elapsedSeconds'] as int?) ?? 0;
+    final String durationText = _formatDuration(elapsedSeconds);
+
+    return Scaffold(
+      body: SafeArea(
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
             child: Column(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                // دائرة خضراء بداخلها علامة صح للدلالة على نجاح الإيقاف
                 Container(
                   height: 70,
                   width: 70,
@@ -38,36 +46,22 @@ class TrackingSessionEndScreen extends StatelessWidget {
                     size: 34,
                   ),
                 ),
-
                 const SizedBox(height: 14),
-
-                // عنوان رئيسي يوضح أن التتبع توقف
                 const Text(
                   'Tracking Stopped',
                   style: TextStyle(fontSize: 14, fontWeight: FontWeight.w900),
                 ),
-
                 const SizedBox(height: 6),
-
-                // وصف بسيط يوضح أن الجلسة انتهت بنجاح
                 const Text(
                   'Session ended successfully',
                   style: TextStyle(color: Colors.black54, fontSize: 12),
                 ),
-
                 const SizedBox(height: 6),
-
-                // مدة الجلسة المعروضة حالياً ثابتة للتجربة
-                // لاحقاً يمكن تمرير المدة الحقيقية من صفحة التتبع أو حسابها من قاعدة البيانات
-                const Text(
-                  'Duration: 00:00:03',
-                  style: TextStyle(color: Colors.black45, fontSize: 12),
+                Text(
+                  'Duration: $durationText',
+                  style: const TextStyle(color: Colors.black45, fontSize: 12),
                 ),
-
                 const SizedBox(height: 18),
-
-                // زر يرجع المستخدم للوحة السائق
-                // يتم مسح الصفحات السابقة حتى لا يرجع المستخدم للخلف إلى شاشة التتبع
                 TextButton(
                   onPressed: () => Navigator.pushNamedAndRemoveUntil(
                     context,

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
 import 'package:latlong2/latlong.dart';
@@ -17,6 +19,31 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
   static final LatLng unitenCenter = LatLng(2.9766, 101.7331);
 
   bool _bannerDismissed = false;
+  bool _loadingSession = true;
+  bool _loadingStops = true;
+  bool _loadingRoutePoints = true;
+  String? _sessionError;
+
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _sessionSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _stopsSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _routePointsSub;
+
+  Timer? _movementTimer;
+
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _stopsDocs = [];
+  List<LatLng> _routePoints = [];
+  List<double> _routeCumulativeMeters = [];
+  List<_StopProgress> _orderedStopProgress = [];
+
+  bool _hasActiveSession = false;
+  String _busName = '__';
+  String _routeName = '__';
+  String? _routeId;
+  double _currentSpeed = 0.0;
+  double _routeProgressMeters = 0.0;
+
+  LatLng? _latestServerPosition;
+  LatLng? _displayedBusPosition;
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _activeSessionStream() {
     return FirebaseFirestore.instance
@@ -28,19 +55,422 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
   }
 
   Stream<QuerySnapshot<Map<String, dynamic>>> _stopsStream() {
-    return FirebaseFirestore.instance
-        .collection('stops')
-        .orderBy('order')
-        .snapshots();
+    Query<Map<String, dynamic>> query = FirebaseFirestore.instance.collection(
+      'stops',
+    );
+
+    if (_routeId != null && _routeId!.isNotEmpty) {
+      query = query.where('routeId', isEqualTo: _routeId);
+    }
+
+    return query.orderBy('order').snapshots();
   }
 
-  // حساب المسافة بين نقطتين بالمتر
+  Stream<QuerySnapshot<Map<String, dynamic>>> _routePointsStream() {
+    Query<Map<String, dynamic>> query = FirebaseFirestore.instance.collection(
+      'route_points',
+    );
+
+    return query.orderBy('order').snapshots();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _listenToActiveSession();
+    _listenToStops();
+    _listenToRoutePoints();
+  }
+
+  @override
+  void dispose() {
+    _sessionSub?.cancel();
+    _stopsSub?.cancel();
+    _routePointsSub?.cancel();
+    _movementTimer?.cancel();
+    super.dispose();
+  }
+
+  void _restartStopsListener() {
+    _stopsSub?.cancel();
+    _listenToStops();
+  }
+
+  void _restartRoutePointsListener() {
+    _routePointsSub?.cancel();
+    _listenToRoutePoints();
+  }
+
+  void _listenToStops() {
+    _stopsSub = _stopsStream().listen(
+      (snapshot) {
+        if (!mounted) return;
+        setState(() {
+          _stopsDocs = snapshot.docs;
+          _loadingStops = false;
+          _rebuildStopProgress();
+        });
+      },
+      onError: (_) {
+        if (!mounted) return;
+        setState(() {
+          _loadingStops = false;
+        });
+      },
+    );
+  }
+
+  void _listenToRoutePoints() {
+    _routePointsSub = _routePointsStream().listen(
+      (snapshot) {
+        if (!mounted) return;
+
+        List<QueryDocumentSnapshot<Map<String, dynamic>>> docs = snapshot.docs;
+
+        if (_routeId != null && _routeId!.isNotEmpty) {
+          final filtered = docs.where((doc) {
+            final data = doc.data();
+            return data['routeId'] == _routeId;
+          }).toList();
+
+          if (filtered.isNotEmpty) {
+            docs = filtered;
+          }
+        }
+
+        final List<LatLng> points = docs
+            .map((doc) {
+              final data = doc.data();
+              final lat = data['latitude'];
+              final lng = data['longitude'];
+
+              if (lat is num && lng is num) {
+                return LatLng(lat.toDouble(), lng.toDouble());
+              }
+              return null;
+            })
+            .whereType<LatLng>()
+            .toList();
+
+        setState(() {
+          _routePoints = points;
+          _loadingRoutePoints = false;
+          _rebuildRouteCumulativeDistances();
+          _rebuildStopProgress();
+        });
+      },
+      onError: (_) {
+        if (!mounted) return;
+        setState(() {
+          _loadingRoutePoints = false;
+        });
+      },
+    );
+  }
+
+  void _listenToActiveSession() {
+    _sessionSub = _activeSessionStream().listen(
+      (snapshot) {
+        if (!mounted) return;
+
+        if (snapshot.docs.isEmpty) {
+          _movementTimer?.cancel();
+
+          setState(() {
+            _loadingSession = false;
+            _hasActiveSession = false;
+            _latestServerPosition = null;
+            _displayedBusPosition = null;
+            _currentSpeed = 0.0;
+            _routeProgressMeters = 0.0;
+            _busName = '__';
+            _routeName = '__';
+            _routeId = null;
+          });
+          return;
+        }
+
+        final sessionData = snapshot.docs.first.data();
+
+        final dynamic latRaw = sessionData['currentLatitude'];
+        final dynamic lngRaw = sessionData['currentLongitude'];
+        final dynamic speedRaw = sessionData['currentSpeed'];
+        final dynamic progressRaw = sessionData['routeProgressMeters'];
+
+        final String status =
+            (sessionData['status'] as String?)?.trim().toLowerCase() ?? '';
+
+        final bool hasValidLocation = latRaw is num && lngRaw is num;
+        final bool isActive = status == 'active';
+
+        final String busName =
+            ((sessionData['busId'] as String?)?.trim().isNotEmpty == true)
+            ? (sessionData['busId'] as String).trim()
+            : '__';
+
+        final String routeName =
+            ((sessionData['routeName'] as String?)?.trim().isNotEmpty == true)
+            ? (sessionData['routeName'] as String).trim()
+            : '__';
+
+        final String? newRouteId = (sessionData['routeId'] as String?)?.trim();
+
+        double speed = 0.0;
+        if (speedRaw is num) {
+          speed = speedRaw.toDouble();
+        }
+
+        double progressMeters = 0.0;
+        if (progressRaw is num) {
+          progressMeters = progressRaw.toDouble();
+        }
+
+        if (!isActive || !hasValidLocation) {
+          _movementTimer?.cancel();
+
+          setState(() {
+            _loadingSession = false;
+            _hasActiveSession = false;
+            _latestServerPosition = null;
+            _displayedBusPosition = null;
+            _currentSpeed = 0.0;
+            _routeProgressMeters = 0.0;
+            _busName = busName;
+            _routeName = routeName;
+          });
+          return;
+        }
+
+        final LatLng newServerPosition = LatLng(
+          latRaw.toDouble(),
+          lngRaw.toDouble(),
+        );
+
+        final bool routeChanged = newRouteId != _routeId;
+
+        if (routeChanged) {
+          _routeId = newRouteId;
+          _loadingStops = true;
+          _loadingRoutePoints = true;
+          _restartStopsListener();
+          _restartRoutePointsListener();
+        }
+
+        final bool firstPoint = _displayedBusPosition == null;
+
+        setState(() {
+          _loadingSession = false;
+          _hasActiveSession = true;
+          _busName = busName;
+          _routeName = routeName;
+          _currentSpeed = speed;
+          _routeProgressMeters = progressMeters;
+        });
+
+        if (firstPoint) {
+          setState(() {
+            _latestServerPosition = newServerPosition;
+            _displayedBusPosition = newServerPosition;
+          });
+          return;
+        }
+
+        if (_latestServerPosition != null &&
+            _latestServerPosition!.latitude == newServerPosition.latitude &&
+            _latestServerPosition!.longitude == newServerPosition.longitude) {
+          return;
+        }
+
+        _latestServerPosition = newServerPosition;
+        _animateBusTo(newServerPosition);
+      },
+      onError: (error) {
+        if (!mounted) return;
+        setState(() {
+          _loadingSession = false;
+          _sessionError = error.toString();
+        });
+      },
+    );
+  }
+
+  void _rebuildRouteCumulativeDistances() {
+    _routeCumulativeMeters = [];
+
+    if (_routePoints.isEmpty) return;
+
+    double total = 0.0;
+    _routeCumulativeMeters.add(0.0);
+
+    for (int i = 1; i < _routePoints.length; i++) {
+      total += _distanceMeters(_routePoints[i - 1], _routePoints[i]);
+      _routeCumulativeMeters.add(total);
+    }
+  }
+
+  void _rebuildStopProgress() {
+    _orderedStopProgress = [];
+
+    if (_stopsDocs.isEmpty ||
+        _routePoints.length < 2 ||
+        _routeCumulativeMeters.isEmpty) {
+      return;
+    }
+
+    final stops =
+        _stopsDocs
+            .map((doc) {
+              final d = doc.data();
+              final lat = d['latitude'];
+              final lng = d['longitude'];
+
+              if (lat is! num || lng is! num) return null;
+
+              return {
+                'name': (d['name'] ?? '--').toString(),
+                'order': ((d['order'] ?? 0) as num).toInt(),
+                'pos': LatLng(lat.toDouble(), lng.toDouble()),
+              };
+            })
+            .whereType<Map<String, dynamic>>()
+            .toList()
+          ..sort((a, b) => (a['order'] as int).compareTo(b['order'] as int));
+
+    double previousProgress = 0.0;
+
+    for (final stop in stops) {
+      final LatLng pos = stop['pos'] as LatLng;
+      final double progress = _findStopProgressRespectingOrder(
+        pos,
+        previousProgress,
+      );
+
+      _orderedStopProgress.add(
+        _StopProgress(
+          name: stop['name'] as String,
+          order: stop['order'] as int,
+          position: pos,
+          progressMeters: progress,
+        ),
+      );
+
+      previousProgress = progress;
+    }
+  }
+
+  double _findStopProgressRespectingOrder(
+    LatLng stopPos,
+    double previousProgress,
+  ) {
+    if (_routePoints.length < 2) return 0.0;
+
+    final int startSegment = _segmentIndexForProgress(previousProgress);
+    final int endSegment = _routePoints.length - 2;
+
+    LatLng? bestPoint;
+    double bestDistance = double.infinity;
+    double bestProgress = previousProgress;
+
+    for (int i = startSegment; i <= endSegment; i++) {
+      final _ProjectedPoint projected = _projectPointOnSegmentWithT(
+        stopPos,
+        _routePoints[i],
+        _routePoints[i + 1],
+      );
+
+      final double d = _distanceMeters(stopPos, projected.point);
+      if (d < bestDistance) {
+        bestDistance = d;
+        bestPoint = projected.point;
+
+        final double segmentLength = _distanceMeters(
+          _routePoints[i],
+          _routePoints[i + 1],
+        );
+
+        bestProgress =
+            _routeCumulativeMeters[i] +
+            (segmentLength * projected.t.clamp(0.0, 1.0));
+      }
+    }
+
+    if (bestPoint == null) {
+      return previousProgress;
+    }
+
+    if (bestProgress < previousProgress) {
+      return previousProgress;
+    }
+
+    return bestProgress;
+  }
+
+  int _segmentIndexForProgress(double progressMeters) {
+    if (_routePoints.length < 2 || _routeCumulativeMeters.isEmpty) return 0;
+
+    for (int i = 0; i < _routeCumulativeMeters.length - 1; i++) {
+      final double start = _routeCumulativeMeters[i];
+      final double end = _routeCumulativeMeters[i + 1];
+
+      if (progressMeters >= start && progressMeters <= end) {
+        return i;
+      }
+    }
+
+    return _routePoints.length - 2;
+  }
+
+  void _animateBusTo(LatLng newTarget) {
+    final LatLng? start = _displayedBusPosition;
+    if (start == null) {
+      setState(() {
+        _displayedBusPosition = newTarget;
+      });
+      return;
+    }
+
+    _movementTimer?.cancel();
+
+    const int steps = 20;
+    const Duration totalDuration = Duration(milliseconds: 1300);
+    final int stepMs = (totalDuration.inMilliseconds / steps).round();
+
+    int currentStep = 0;
+
+    _movementTimer = Timer.periodic(Duration(milliseconds: stepMs), (timer) {
+      currentStep++;
+
+      final double t = currentStep / steps;
+
+      final double lat =
+          start.latitude + ((newTarget.latitude - start.latitude) * t);
+      final double lng =
+          start.longitude + ((newTarget.longitude - start.longitude) * t);
+
+      if (!mounted) {
+        timer.cancel();
+        return;
+      }
+
+      setState(() {
+        _displayedBusPosition = LatLng(lat, lng);
+      });
+
+      if (currentStep >= steps) {
+        timer.cancel();
+        if (!mounted) return;
+        setState(() {
+          _displayedBusPosition = newTarget;
+        });
+      }
+    });
+  }
+
   double _distanceMeters(LatLng a, LatLng b) {
     const Distance distance = Distance();
     return distance(a, b);
   }
 
-  // تنسيق ETA بناءً على الثواني
   String _formatEtaFromSeconds(double seconds) {
     if (seconds.isNaN || seconds.isInfinite || seconds <= 0) {
       return '--';
@@ -54,48 +484,67 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
     return '$minutes min';
   }
 
-  // إيجاد أقرب موقف + الموقف التالي + المسافة + ETA
+  _ProjectedPoint _projectPointOnSegmentWithT(LatLng p, LatLng a, LatLng b) {
+    final double ax = a.longitude;
+    final double ay = a.latitude;
+    final double bx = b.longitude;
+    final double by = b.latitude;
+    final double px = p.longitude;
+    final double py = p.latitude;
+
+    final double abx = bx - ax;
+    final double aby = by - ay;
+    final double apx = px - ax;
+    final double apy = py - ay;
+
+    final double abSquared = (abx * abx) + (aby * aby);
+    if (abSquared == 0) {
+      return _ProjectedPoint(a, 0.0);
+    }
+
+    double t = ((apx * abx) + (apy * aby)) / abSquared;
+    t = t.clamp(0.0, 1.0);
+
+    return _ProjectedPoint(LatLng(ay + (aby * t), ax + (abx * t)), t);
+  }
+
   Map<String, String> _findCurrentNextEtaAndDistance({
-    required LatLng busPos,
+    required double progressMeters,
     required double speedMps,
-    required List<QueryDocumentSnapshot<Map<String, dynamic>>> stopsDocs,
   }) {
-    if (stopsDocs.isEmpty) {
+    if (_orderedStopProgress.isEmpty) {
       return {'current': '___', 'next': '--', 'distance': '--', 'eta': '--'};
     }
 
-    final stops =
-        stopsDocs.map((doc) {
-            final d = doc.data();
+    // إذا الباص قبل أول محطة
+    if (progressMeters < _orderedStopProgress.first.progressMeters - 5) {
+      final firstStop = _orderedStopProgress.first;
+      final double remainingMeters = (firstStop.progressMeters - progressMeters)
+          .clamp(0.0, double.infinity);
 
-            return {
-              'name': (d['name'] ?? '--').toString(),
-              'order': ((d['order'] ?? 0) as num).toInt(),
-              'pos': LatLng(
-                (d['latitude'] as num).toDouble(),
-                (d['longitude'] as num).toDouble(),
-              ),
-            };
-          }).toList()
-          ..sort((a, b) => (a['order'] as int).compareTo(b['order'] as int));
+      final double effectiveSpeed = speedMps > 0.5 ? speedMps : 4.0;
 
-    double bestDistance = double.infinity;
-    int bestIndex = 0;
+      return {
+        'current': '__',
+        'next': firstStop.name,
+        'distance': '${remainingMeters.round()} m',
+        'eta': _formatEtaFromSeconds(remainingMeters / effectiveSpeed),
+      };
+    }
 
-    for (int i = 0; i < stops.length; i++) {
-      final LatLng stopPos = stops[i]['pos'] as LatLng;
-      final double d = _distanceMeters(busPos, stopPos);
+    int currentStopIndex = 0;
 
-      if (d < bestDistance) {
-        bestDistance = d;
-        bestIndex = i;
+    for (int i = 0; i < _orderedStopProgress.length; i++) {
+      if (_orderedStopProgress[i].progressMeters <= progressMeters + 5) {
+        currentStopIndex = i;
+      } else {
+        break;
       }
     }
 
-    final String currentName = stops[bestIndex]['name'] as String;
+    final String currentName = _orderedStopProgress[currentStopIndex].name;
 
-    // إذا ما فيه موقف بعده
-    if (bestIndex + 1 >= stops.length) {
+    if (currentStopIndex + 1 >= _orderedStopProgress.length) {
       return {
         'current': currentName,
         'next': '--',
@@ -104,236 +553,217 @@ class _StudentHomeScreenState extends State<StudentHomeScreen> {
       };
     }
 
-    final String nextName = stops[bestIndex + 1]['name'] as String;
-    final LatLng nextPos = stops[bestIndex + 1]['pos'] as LatLng;
+    final _StopProgress nextStop = _orderedStopProgress[currentStopIndex + 1];
+    final double remainingMeters = (nextStop.progressMeters - progressMeters)
+        .clamp(0.0, double.infinity);
 
-    final double distanceToNext = _distanceMeters(busPos, nextPos);
-    final String distanceText = '${distanceToNext.round()} m';
-
-    // إذا السرعة ضعيفة جدًا أو صفر، ما نحسب ETA
-    String etaText = '--';
-    if (speedMps > 0.5) {
-      final double etaSeconds = distanceToNext / speedMps;
-      etaText = _formatEtaFromSeconds(etaSeconds);
-    }
+    final String distanceText = '${remainingMeters.round()} m';
+    final double effectiveSpeed = speedMps > 0.5 ? speedMps : 4.0;
+    final double etaSeconds = remainingMeters / effectiveSpeed;
 
     return {
       'current': currentName,
-      'next': nextName,
+      'next': nextStop.name,
       'distance': distanceText,
-      'eta': etaText,
+      'eta': _formatEtaFromSeconds(etaSeconds),
     };
   }
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-      stream: _activeSessionStream(),
-      builder: (context, snapshot) {
-        if (snapshot.hasError) {
-          return Scaffold(
-            appBar: AppBar(
-              title: const Text('Live Bus Tracking'),
-              leading: IconButton(
-                icon: const Icon(Icons.arrow_back),
-                onPressed: () => Navigator.pop(context),
-              ),
-            ),
-            body: Center(
-              child: Text(
-                'في مشكلة بالاتصال: ${snapshot.error}',
-                textAlign: TextAlign.center,
-              ),
-            ),
-          );
-        }
-
-        final bool loading =
-            snapshot.connectionState == ConnectionState.waiting;
-
-        final bool hasSessionDoc =
-            snapshot.hasData && snapshot.data!.docs.isNotEmpty;
-
-        Map<String, dynamic>? sessionData;
-        if (hasSessionDoc) {
-          sessionData = snapshot.data!.docs.first.data();
-        }
-
-        bool hasActiveSession = false;
-        LatLng? busPosition;
-        double currentSpeed = 0.0;
-
-        if (sessionData != null) {
-          final dynamic latRaw = sessionData['currentLatitude'];
-          final dynamic lngRaw = sessionData['currentLongitude'];
-          final dynamic speedRaw = sessionData['currentSpeed'];
-          final String status =
-              (sessionData['status'] as String?)?.trim().toLowerCase() ?? '';
-
-          final bool hasValidLocation = latRaw is num && lngRaw is num;
-          final bool isActive = status == 'active';
-
-          if (speedRaw is num) {
-            currentSpeed = speedRaw.toDouble();
-          }
-
-          if (isActive && hasValidLocation) {
-            hasActiveSession = true;
-            busPosition = LatLng(latRaw.toDouble(), lngRaw.toDouble());
-          }
-        }
-
-        String busName = '__';
-        String routeName = '__';
-
-        if (sessionData != null) {
-          final String? bn = sessionData['busId'] as String?;
-          final String? rn = sessionData['routeName'] as String?;
-
-          if (bn != null && bn.trim().isNotEmpty) busName = bn.trim();
-          if (rn != null && rn.trim().isNotEmpty) routeName = rn.trim();
-        }
-
-        return Scaffold(
-          appBar: AppBar(
-            title: const Text('Live Bus Tracking'),
-            leading: IconButton(
-              icon: const Icon(Icons.arrow_back),
-              onPressed: () => Navigator.pop(context),
-            ),
+    if (_sessionError != null) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Live Bus Tracking'),
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.pop(context),
           ),
-          body: Stack(
-            children: [
-              Positioned.fill(
-                child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-                  stream: _stopsStream(),
-                  builder: (context, stopsSnapshot) {
-                    String currentStopName = '___';
-                    String nextStopName = '--';
-                    String etaText = '--';
-                    String distanceText = '--';
+        ),
+        body: Center(
+          child: Text(
+            'في مشكلة بالاتصال: $_sessionError',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      );
+    }
 
-                    if (stopsSnapshot.hasData) {
-                      final stopsDocs = stopsSnapshot.data!.docs;
+    String currentStopName = '___';
+    String nextStopName = '--';
+    String etaText = '--';
+    String distanceText = '--';
 
-                      if (hasActiveSession && busPosition != null) {
-                        final result = _findCurrentNextEtaAndDistance(
-                          busPos: busPosition,
-                          speedMps: currentSpeed,
-                          stopsDocs: stopsDocs,
-                        );
+    if (_hasActiveSession &&
+        _displayedBusPosition != null &&
+        _orderedStopProgress.isNotEmpty) {
+      final result = _findCurrentNextEtaAndDistance(
+        progressMeters: _routeProgressMeters,
+        speedMps: _currentSpeed,
+      );
 
-                        currentStopName = result['current'] ?? '___';
-                        nextStopName = result['next'] ?? '--';
-                        etaText = result['eta'] ?? '--';
-                        distanceText = result['distance'] ?? '--';
-                      }
-                    }
+      currentStopName = result['current'] ?? '___';
+      nextStopName = result['next'] ?? '--';
+      etaText = result['eta'] ?? '--';
+      distanceText = result['distance'] ?? '--';
+    }
 
-                    return Stack(
-                      children: [
-                        FlutterMap(
-                          options: MapOptions(
-                            initialCenter: unitenCenter,
-                            initialZoom: 15.8,
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Live Bus Tracking'),
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back),
+          onPressed: () => Navigator.pop(context),
+        ),
+      ),
+      body: Stack(
+        children: [
+          Positioned.fill(
+            child: Stack(
+              children: [
+                FlutterMap(
+                  options: MapOptions(
+                    initialCenter: unitenCenter,
+                    initialZoom: 15.8,
+                  ),
+                  children: [
+                    TileLayer(
+                      urlTemplate:
+                          'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
+                      userAgentPackageName: 'com.example.unibus',
+                    ),
+
+                    if (_routePoints.length >= 2)
+                      PolylineLayer(
+                        polylines: [
+                          Polyline(
+                            points: _routePoints,
+                            strokeWidth: 4,
+                            color: AppTheme.primaryBlue.withOpacity(0.55),
                           ),
-                          children: [
-                            TileLayer(
-                              urlTemplate:
-                                  'https://tile.openstreetmap.org/{z}/{x}/{y}.png',
-                              userAgentPackageName: 'com.example.unibus',
-                            ),
+                        ],
+                      ),
 
-                            // الباص النشط فقط
-                            MarkerLayer(
-                              markers: [
-                                if (hasActiveSession && busPosition != null)
-                                  Marker(
-                                    point: busPosition,
-                                    width: 44,
-                                    height: 44,
-                                    child: const Icon(
-                                      Icons.directions_bus,
-                                      size: 40,
-                                      color: Colors.red,
-                                    ),
-                                  ),
-                              ],
+                    MarkerLayer(
+                      markers: [
+                        ..._orderedStopProgress.map((stop) {
+                          return Marker(
+                            point: stop.position,
+                            width: 22,
+                            height: 22,
+                            child: const Icon(
+                              Icons.location_on,
+                              size: 20,
+                              color: AppTheme.primaryBlue,
                             ),
-                          ],
-                        ),
+                          );
+                        }),
 
-                        Align(
-                          alignment: Alignment.bottomCenter,
-                          child: SafeArea(
-                            top: false,
-                            child: _BottomInfoCard(
-                              busName: busName,
-                              routeName: routeName,
-                              currentLocation: currentStopName,
-                              nextStop: nextStopName,
-                              etaText: etaText,
-                              distanceText: distanceText,
-                              onNotificationsTap: () {
-                                Navigator.pushNamed(
-                                  context,
-                                  AppRoutes.studentNotifications,
-                                );
-                              },
-                              onFeedbackTap: () {
-                                Navigator.pushNamed(
-                                  context,
-                                  AppRoutes.studentFeedback,
-                                );
-                              },
+                        if (_hasActiveSession && _displayedBusPosition != null)
+                          Marker(
+                            point: _displayedBusPosition!,
+                            width: 44,
+                            height: 44,
+                            child: const Icon(
+                              Icons.directions_bus,
+                              size: 40,
+                              color: Colors.red,
                             ),
                           ),
-                        ),
                       ],
-                    );
-                  },
+                    ),
+                  ],
+                ),
+
+                Align(
+                  alignment: Alignment.bottomCenter,
+                  child: SafeArea(
+                    top: false,
+                    child: _BottomInfoCard(
+                      busName: _busName,
+                      routeName: _routeName,
+                      currentLocation: currentStopName,
+                      nextStop: nextStopName,
+                      etaText: etaText,
+                      distanceText: distanceText,
+                      onNotificationsTap: () {
+                        Navigator.pushNamed(
+                          context,
+                          AppRoutes.studentNotifications,
+                        );
+                      },
+                      onFeedbackTap: () {
+                        Navigator.pushNamed(context, AppRoutes.studentFeedback);
+                      },
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+
+          if (_loadingSession || _loadingStops || _loadingRoutePoints)
+            Positioned(
+              left: 14,
+              right: 14,
+              top: 14,
+              child: Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(10),
+                  border: Border.all(color: AppTheme.cardBorder),
+                ),
+                child: const Text(
+                  'Loading database...',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontWeight: FontWeight.w600),
                 ),
               ),
+            ),
 
-              if (loading)
-                Positioned(
-                  left: 14,
-                  right: 14,
-                  top: 14,
-                  child: Container(
-                    padding: const EdgeInsets.all(10),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(10),
-                      border: Border.all(color: AppTheme.cardBorder),
-                    ),
-                    child: const Text(
-                      'Loading database...',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontWeight: FontWeight.w600),
-                    ),
-                  ),
-                ),
-
-              if (!hasActiveSession && !_bannerDismissed && !loading)
-                Positioned(
-                  left: 14,
-                  right: 14,
-                  top: 14,
-                  child: _NoBusBanner(
-                    onClose: () {
-                      setState(() {
-                        _bannerDismissed = true;
-                      });
-                    },
-                  ),
-                ),
-            ],
-          ),
-        );
-      },
+          if (!_hasActiveSession &&
+              !_bannerDismissed &&
+              !_loadingSession &&
+              !_loadingStops &&
+              !_loadingRoutePoints)
+            Positioned(
+              left: 14,
+              right: 14,
+              top: 14,
+              child: _NoBusBanner(
+                onClose: () {
+                  setState(() {
+                    _bannerDismissed = true;
+                  });
+                },
+              ),
+            ),
+        ],
+      ),
     );
   }
+}
+
+class _ProjectedPoint {
+  final LatLng point;
+  final double t;
+
+  const _ProjectedPoint(this.point, this.t);
+}
+
+class _StopProgress {
+  final String name;
+  final int order;
+  final LatLng position;
+  final double progressMeters;
+
+  const _StopProgress({
+    required this.name,
+    required this.order,
+    required this.position,
+    required this.progressMeters,
+  });
 }
 
 class _NoBusBanner extends StatelessWidget {

@@ -28,7 +28,7 @@ class UniBusApp extends StatelessWidget {
       title: 'UniBus',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
-      initialRoute: AppRoutes.roleSelection,
+      initialRoute: AppRoutes.splash,
       routes: AppRoutes.routes,
     );
   }

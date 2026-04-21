@@ -1,5 +1,9 @@
 import 'package:flutter/material.dart';
 
+// Splash
+import '../features/splash/splash_screen.dart';
+
+// Role
 import '../features/role/role_selection_screen.dart';
 
 // Student
@@ -20,6 +24,9 @@ import '../features/admin/feedback_center_screen.dart';
 import '../features/admin/driver_performance_screen.dart';
 
 class AppRoutes {
+  // 🔥 أهم إضافة (Splash)
+  static const String splash = '/';
+
   static const String roleSelection = '/role-selection';
 
   // Student
@@ -41,6 +48,9 @@ class AppRoutes {
   static const String driverPerformance = '/driver-performance';
 
   static Map<String, WidgetBuilder> get routes => {
+    // 🔥 خلي البداية سبلاش
+    splash: (_) => const SplashScreen(),
+
     roleSelection: (_) => const RoleSelectionScreen(),
 
     // Student

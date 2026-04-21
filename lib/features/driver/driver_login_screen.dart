@@ -2,16 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import '../../../app/app_routes.dart';
-import '../../../app/app_theme.dart';
+import '../../app/app_routes.dart';
+import '../../app/app_theme.dart';
+import '../../core/services/driver_active_session_service.dart';
 
-// هذه شاشة تسجيل دخول السائق
-// الهدف منها:
-// 1) إدخال البريد
-// 2) إدخال كلمة المرور مع خيار إظهار/إخفاء
-// 3) تفعيل زر الدخول فقط عند إدخال القيم المطلوبة
-// 4) عند نجاح تسجيل الدخول يتم التحقق من Firebase Auth
-// 5) ثم يتم جلب بيانات السائق من Firestore
 class DriverLoginScreen extends StatefulWidget {
   const DriverLoginScreen({super.key});
 
@@ -20,24 +14,14 @@ class DriverLoginScreen extends StatefulWidget {
 }
 
 class _DriverLoginScreenState extends State<DriverLoginScreen> {
-  // متحكم حقل البريد الإلكتروني
   final TextEditingController emailController = TextEditingController();
-
-  // متحكم حقل كلمة المرور
   final TextEditingController passwordController = TextEditingController();
 
-  // هذا المتغير يتحكم في إظهار أو إخفاء كلمة المرور
   bool obscurePassword = true;
-
-  // هذا المتغير يوضح هل زر الدخول في حالة تحميل أم لا
   bool isLoading = false;
-
-  // هذا النص يظهر للمستخدم إذا صار خطأ
   String? errorText;
 
-  // دالة تسجيل دخول السائق
   Future<void> _signInDriver() async {
-    // تنظيف أي رسالة خطأ سابقة
     setState(() {
       isLoading = true;
       errorText = null;
@@ -47,17 +31,14 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
       final String email = emailController.text.trim();
       final String password = passwordController.text.trim();
 
-      // التحقق من Firebase Authentication
       final UserCredential userCredential = await FirebaseAuth.instance
           .signInWithEmailAndPassword(email: email, password: password);
 
       final String? loggedInEmail = userCredential.user?.email;
-
       if (loggedInEmail == null) {
         throw Exception('No user email found.');
       }
 
-      // بعد نجاح تسجيل الدخول نبحث عن بيانات السائق داخل Firestore
       final QuerySnapshot<Map<String, dynamic>> driverQuery =
           await FirebaseFirestore.instance
               .collection('drivers')
@@ -65,14 +46,35 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
               .limit(1)
               .get();
 
-      // إذا لم نجد السائق في قاعدة البيانات
       if (driverQuery.docs.isEmpty) {
         throw Exception('Driver data not found in database.');
       }
 
+      final activeSession =
+          await DriverActiveSessionService.getValidActiveSessionForDriver(
+            driverEmail: loggedInEmail,
+          );
+
       if (!mounted) return;
 
-      // الانتقال إلى لوحة السائق بدون أي SnackBar
+      if (activeSession != null) {
+        Navigator.pushNamedAndRemoveUntil(
+          context,
+          AppRoutes.driverTrackingActive,
+          (_) => false,
+          arguments: {
+            'driverName': activeSession['driverName'],
+            'busId': activeSession['busId'],
+            'busDocId': activeSession['busDocId'],
+            'routeName': activeSession['routeName'],
+            'sessionDocId': activeSession['sessionId'],
+            'resumeSession': true,
+            'startSeconds': activeSession['startSeconds'],
+          },
+        );
+        return;
+      }
+
       Navigator.pushReplacementNamed(context, AppRoutes.driverDashboard);
     } on FirebaseAuthException catch (e) {
       String message = 'Login failed. Please try again.';
@@ -105,7 +107,6 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
 
   @override
   void dispose() {
-    // إغلاق المتحكمات عند خروج الصفحة لتجنب تسريب الذاكرة
     emailController.dispose();
     passwordController.dispose();
     super.dispose();
@@ -113,7 +114,6 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
 
   @override
   Widget build(BuildContext context) {
-    // شرط تفعيل زر الدخول
     final bool canSignIn =
         emailController.text.trim().isNotEmpty &&
         passwordController.text.isNotEmpty &&
@@ -121,25 +121,17 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        // عنوان الصفحة
         title: const Text('Driver Login'),
-
-        // زر رجوع للصفحة السابقة
         leading: IconButton(
           icon: const Icon(Icons.arrow_back),
           onPressed: () => Navigator.pop(context),
         ),
       ),
-
-      // حماية المحتوى من شريط الحالة
       body: SafeArea(
-        // قائمة قابلة للتمرير حتى لا يصير قص عند صغر الشاشة أو عند ظهور لوحة المفاتيح
         child: ListView(
           padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
           children: [
             const SizedBox(height: 8),
-
-            // أيقونة داخل دائرة للتصميم
             Center(
               child: Container(
                 height: 56,
@@ -151,59 +143,41 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
                 child: const Icon(Icons.login, color: AppTheme.primaryBlue),
               ),
             ),
-
             const SizedBox(height: 12),
-
-            // عنوان توضيحي
             const Center(
               child: Text(
                 'Driver Access',
                 style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800),
               ),
             ),
-
             const SizedBox(height: 6),
-
-            // وصف بسيط تحت العنوان
             const Center(
               child: Text(
                 'Sign in to start tracking',
                 style: TextStyle(color: Colors.black54, fontSize: 12),
               ),
             ),
-
             const SizedBox(height: 18),
-
-            // عنوان حقل البريد
             const Text(
               'Email',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
-
             const SizedBox(height: 8),
-
-            // حقل إدخال البريد
             _InputField(
               controller: emailController,
               hintText: '',
               prefixIcon: Icons.email_outlined,
               onChanged: (_) => setState(() {}),
             ),
-
             const SizedBox(height: 14),
-
-            // عنوان حقل كلمة المرور
             const Text(
               'Password',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
-
             const SizedBox(height: 8),
-
-            // حقل إدخال كلمة المرور
             _InputField(
               controller: passwordController,
-              hintText: '   ',
+              hintText: '',
               prefixIcon: Icons.lock_outline,
               obscureText: obscurePassword,
               suffixIcon: IconButton(
@@ -215,10 +189,7 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
               ),
               onChanged: (_) => setState(() {}),
             ),
-
             const SizedBox(height: 12),
-
-            // إذا في خطأ نظهره هنا
             if (errorText != null)
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -239,10 +210,7 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
                   ),
                 ),
               ),
-
             if (errorText != null) const SizedBox(height: 12),
-
-            // زر الدخول
             SizedBox(
               height: 48,
               child: ElevatedButton.icon(
@@ -270,7 +238,6 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 14),
           ],
         ),
@@ -279,24 +246,12 @@ class _DriverLoginScreenState extends State<DriverLoginScreen> {
   }
 }
 
-// هذا عنصر إدخال موحد لتقليل تكرار تصميم حقول النص
 class _InputField extends StatelessWidget {
-  // المتحكم المرتبط بحقل الإدخال
   final TextEditingController controller;
-
-  // النص الإرشادي داخل الحقل
   final String hintText;
-
-  // الأيقونة التي تظهر في بداية الحقل
   final IconData prefixIcon;
-
-  // هل يتم إخفاء النص أم لا
   final bool obscureText;
-
-  // عنصر اختياري يظهر في نهاية الحقل مثل زر إظهار كلمة المرور
   final Widget? suffixIcon;
-
-  // دالة اختيارية تنفذ عند تغيير النص داخل الحقل
   final ValueChanged<String>? onChanged;
 
   const _InputField({
@@ -311,44 +266,29 @@ class _InputField extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return TextField(
-      // ربط الحقل بالمتحكم
       controller: controller,
-
-      // تطبيق الإخفاء إذا كان مطلوب
       obscureText: obscureText,
-
-      // تمرير التغيير للدالة القادمة من الصفحة الرئيسية
       onChanged: onChanged,
-
       decoration: InputDecoration(
         hintText: hintText,
-
-        // أيقونة بداية الحقل
         prefixIcon: Icon(prefixIcon, color: Colors.black45),
-
-        // عنصر نهاية الحقل (إن وجد)
         suffixIcon: suffixIcon,
-
-        // جعل الخلفية بيضاء
         filled: true,
         fillColor: Colors.white,
-
-        // مسافات داخلية للحقل
         contentPadding: const EdgeInsets.symmetric(
           horizontal: 12,
           vertical: 14,
         ),
-
-        // شكل الحقل قبل التركيز
         enabledBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
           borderSide: const BorderSide(color: AppTheme.cardBorder),
         ),
-
-        // شكل الحقل عند التركيز
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: AppTheme.primaryBlue, width: 1.4),
+          borderSide: const BorderSide(
+            color: AppTheme.primaryBlue,
+            width: 1.4,
+          ),
         ),
       ),
     );

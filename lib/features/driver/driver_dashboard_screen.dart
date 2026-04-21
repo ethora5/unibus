@@ -2,8 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 
-import '../../../app/app_routes.dart';
-import '../../../app/app_theme.dart';
+import '../../app/app_routes.dart';
+import '../../app/app_theme.dart';
+import '../../core/services/driver_active_session_service.dart';
 import 'driver_schedule_screen.dart';
 
 class DriverDashboardScreen extends StatefulWidget {
@@ -23,6 +24,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   bool isLoadingDriver = true;
   String? driverError;
+  bool checkingActiveSession = true;
 
   @override
   void initState() {
@@ -45,15 +47,11 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           content: const Text('Are you sure you want to log out?'),
           actions: [
             TextButton(
-              onPressed: () {
-                Navigator.pop(dialogContext, false);
-              },
+              onPressed: () => Navigator.pop(dialogContext, false),
               child: const Text('Cancel'),
             ),
             ElevatedButton(
-              onPressed: () {
-                Navigator.pop(dialogContext, true);
-              },
+              onPressed: () => Navigator.pop(dialogContext, true),
               child: const Text('Confirm'),
             ),
           ],
@@ -75,6 +73,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
     setState(() {
       isLoadingDriver = true;
       driverError = null;
+      checkingActiveSession = true;
     });
 
     try {
@@ -105,18 +104,43 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           : 'Driver';
 
       nameController.text = driverName;
+
+      final activeSession =
+          await DriverActiveSessionService.getValidActiveSessionForDriver(
+            driverEmail: email,
+          );
+
+      if (activeSession != null && mounted) {
+        Navigator.pushNamedAndRemoveUntil(
+          context,
+          AppRoutes.driverTrackingActive,
+          (_) => false,
+          arguments: {
+            'driverName': activeSession['driverName'],
+            'busId': activeSession['busId'],
+            'busDocId': activeSession['busDocId'],
+            'routeName': activeSession['routeName'],
+            'sessionDocId': activeSession['sessionId'],
+            'resumeSession': true,
+            'startSeconds': activeSession['startSeconds'],
+          },
+        );
+        return;
+      }
     } catch (e) {
       driverError = e.toString().replaceFirst('Exception: ', '');
     } finally {
       if (mounted) {
         setState(() {
           isLoadingDriver = false;
+          checkingActiveSession = false;
         });
       }
     }
   }
 
   bool get canStart =>
+      !checkingActiveSession &&
       nameController.text.trim().isNotEmpty &&
       selectedBus != null &&
       selectedBusDocId != null;
@@ -130,6 +154,16 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (checkingActiveSession) {
+      return Scaffold(
+        appBar: AppBar(
+          title: const Text('Driver Dashboard'),
+          automaticallyImplyLeading: false,
+        ),
+        body: const SafeArea(child: Center(child: CircularProgressIndicator())),
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(
         title: const Text('Driver Dashboard'),
@@ -144,7 +178,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
           padding: const EdgeInsets.fromLTRB(18, 20, 18, 18),
           children: [
             const SizedBox(height: 8),
-
             Center(
               child: Container(
                 height: 56,
@@ -159,9 +192,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 ),
               ),
             ),
-
             const SizedBox(height: 12),
-
             Center(
               child: Text(
                 'Welcome ${nameController.text}',
@@ -172,7 +203,6 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
               ),
             ),
             const SizedBox(height: 6),
-
             const Center(
               child: Text(
                 'Select your bus to start tracking',
@@ -180,16 +210,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 style: TextStyle(color: Colors.black54, fontSize: 12),
               ),
             ),
-
             const SizedBox(height: 18),
-
             const Text(
               'Driver Name',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
-
             const SizedBox(height: 8),
-
             if (isLoadingDriver)
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -261,16 +287,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                   ),
                 ),
               ),
-
             const SizedBox(height: 16),
-
             const Text(
               'Route',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
-
             const SizedBox(height: 8),
-
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
               decoration: BoxDecoration(
@@ -302,16 +324,12 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 ],
               ),
             ),
-
             const SizedBox(height: 16),
-
             const Text(
               'Select Bus',
               style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700),
             ),
-
             const SizedBox(height: 10),
-
             StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
               stream: FirebaseFirestore.instance
                   .collection('buses')
@@ -421,9 +439,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                 );
               },
             ),
-
             const SizedBox(height: 18),
-
             SizedBox(
               height: 50,
               child: ElevatedButton.icon(
@@ -437,6 +453,7 @@ class _DriverDashboardScreenState extends State<DriverDashboardScreen> {
                             'busId': selectedBus,
                             'busDocId': selectedBusDocId,
                             'routeName': routeName,
+                            'resumeSession': false,
                           },
                         );
                       }
